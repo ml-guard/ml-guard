@@ -1,0 +1,26 @@
+# Сборка нативного модуля `ml_guard_engine` через maturin.
+# Собирается отдельно от основного Python-пакета ml_guard:
+#
+#   pip install maturin
+#   cd rust_engine && maturin develop --release
+#
+# После этого `import ml_guard_engine` работает в текущем venv,
+# и pickle scanner автоматически переключается на нативный путь.
+
+[build-system]
+requires = ["maturin>=1.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "ml_guard_engine"
+version = "0.1.0"
+description = "Native engine for ML Guard scanners"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+strip = true

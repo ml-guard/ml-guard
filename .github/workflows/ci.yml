@@ -1,0 +1,91 @@
+name: ML Guard CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          pip install -e ".[dev]"
+      - name: Run tests
+        run: pytest -v
+      - name: Self-scan (smoke test)
+        run: ml-guard scan ./tests --fail-on critical || true
+
+  scan-on-pr:
+    # Демо-задача: показывает как использовать ml-guard в чужих репозиториях.
+    # В реальности это будет отдельный action (uses: ml-guard/scan-action@v1).
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install ml-guard
+        run: pip install -e .
+      - name: Scan models
+        run: |
+          ml-guard scan . \
+            --format sarif \
+            --output ml-guard.sarif \
+            --fail-on critical
+      - name: Upload SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ml-guard.sarif
+          category: ml-guard
+
+  test-rust:
+    name: cargo test (rust_engine)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - working-directory: rust_engine
+        run: cargo test --release
+
+  lint:
+    name: ruff + mypy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install -e '.[dev]'
+      - run: ruff check ml_guard tests
+      - run: mypy ml_guard
+
+  build-native:
+    name: maturin build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pip install maturin
+      - working-directory: rust_engine
+        run: maturin build --release --strip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}
+          path: rust_engine/target/wheels/*.whl

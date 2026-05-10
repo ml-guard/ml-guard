@@ -1,0 +1,44 @@
+# Файлы которые попадают в source distribution (sdist).
+#
+# pyproject.toml уже описывает что попадает в wheel через
+# [tool.setuptools.package-data]. MANIFEST.in нужен для sdist, где
+# поведение немного другое.
+
+include LICENSE
+include README.md
+include CHANGELOG.md
+include CONTRIBUTING.md
+include SECURITY.md
+include pyproject.toml
+
+# Исходники Rust (для тех, кто соберёт из sdist с native extras)
+recursive-include rust_engine *.rs *.toml
+
+# Документация (юзер-фейсинг и dev)
+recursive-include docs *.md *.yml *.txt
+
+# Bundled OSV mini-DB
+include ml_guard/data/osv-mini.sqlite
+include ml_guard/data/README.md
+include ml_guard/py.typed
+
+# Скрипты для maintainer'ов (не в wheel, только sdist)
+recursive-include scripts *.py *.txt
+
+# Тесты — для тех, кто хочет верифицировать установленный пакет
+recursive-include tests *.py
+include run_tests.py
+
+# Бенчмарки (опционально)
+recursive-include benchmarks *.py
+
+# GitHub Actions / CI
+recursive-include .github *.yml *.yaml
+
+# Что НЕ попадает
+global-exclude __pycache__
+global-exclude *.py[cod]
+global-exclude *.so
+global-exclude .DS_Store
+prune rust_engine/target
+prune .git

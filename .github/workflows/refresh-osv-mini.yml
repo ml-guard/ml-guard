@@ -1,0 +1,84 @@
+# Weekly job: rebuild the bundled OSV mini-DB and open a PR with the
+# updated file. Maintainers can review and merge — the merge cuts a new
+# patch release of ml-guard.
+#
+# Why a PR rather than auto-publish:
+#   • A scheduled push directly to main risks shipping a corrupt DB if
+#     OSV is having a bad day; PR review is cheap insurance.
+#   • The diff also gives us a quick sanity check that the rebuild
+#     produced something reasonable (size delta, advisory count).
+
+name: Refresh bundled OSV mini-DB
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"      # every Monday at 04:17 UTC
+  workflow_dispatch:           # allow manual trigger
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: Install ml-guard
+        run: pip install -e .
+
+      - name: Download fresh OSV PyPI dump
+        run: |
+          curl -fL --retry 3 --retry-delay 5 \
+            -o /tmp/osv-pypi.zip \
+            https://osv-vulnerabilities.storage.googleapis.com/PyPI/all.zip
+
+      - name: Rebuild bundled mini-DB
+        run: |
+          python scripts/build_mini_osv.py \
+            --source /tmp/osv-pypi.zip \
+            --output ml_guard/data/osv-mini.sqlite
+
+      - name: Compute summary
+        id: summary
+        run: |
+          size_kb=$(stat -c %s ml_guard/data/osv-mini.sqlite | awk '{printf "%.0f", $1/1024}')
+          # Quick stats from the DB
+          stats=$(python3 - <<'PY'
+          import sqlite3
+          c = sqlite3.connect("ml_guard/data/osv-mini.sqlite").cursor()
+          n = c.execute("SELECT COUNT(*) FROM advisories").fetchone()[0]
+          mal = c.execute("SELECT COUNT(*) FROM advisories WHERE is_malicious=1").fetchone()[0]
+          print(f"advisories={n} malicious={mal}")
+          PY
+          )
+          {
+            echo "size_kb=$size_kb"
+            echo "stats=$stats"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open / update PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: chore/refresh-osv-mini
+          base: main
+          commit-message: "chore: refresh bundled OSV mini-DB (auto)"
+          title: "chore: refresh bundled OSV mini-DB"
+          body: |
+            Automated refresh of `ml_guard/data/osv-mini.sqlite` from the
+            upstream OSV PyPI feed.
+
+            **Snapshot:**
+            - Size: ${{ steps.summary.outputs.size_kb }} KB
+            - ${{ steps.summary.outputs.stats }}
+            - Source: <https://osv-vulnerabilities.storage.googleapis.com/PyPI/all.zip>
+
+            Merging this PR triggers no automatic release; cut a new
+            `vX.Y.Z+1` tag manually if you want users to receive the
+            updated DB without running `cve-update` themselves.
+          labels: |
+            data-update
+            automated

@@ -1,0 +1,193 @@
+# Popular ML/AI/Python packages — used to filter the bundled OSV mini DB.
+#
+# Goal: cover the typical `requirements.txt` of an ML team out of the box.
+# Pinned to ~150 packages; the bundled DB stays under 3 MB.
+#
+# Pull requests welcome to add more — but please keep the list sorted and
+# deduplicated, and benchmark the resulting DB size.
+
+# --- Core ML/DL frameworks ---
+torch
+torchvision
+torchaudio
+torchtext
+tensorflow
+tensorflow-cpu
+tensorflow-gpu
+keras
+jax
+jaxlib
+mxnet
+paddlepaddle
+onnx
+onnxruntime
+onnxruntime-gpu
+
+# --- Hugging Face & friends ---
+transformers
+diffusers
+accelerate
+datasets
+tokenizers
+huggingface-hub
+safetensors
+peft
+trl
+sentencepiece
+sentence-transformers
+
+# --- LLM / RAG / inference ---
+langchain
+langchain-core
+langchain-community
+langchain-openai
+llama-index
+llama-cpp-python
+openai
+anthropic
+cohere
+litellm
+guidance
+instructor
+ollama
+vllm
+text-generation
+fastchat
+
+# --- Vector DBs and embeddings ---
+chromadb
+qdrant-client
+pinecone-client
+weaviate-client
+pymilvus
+faiss-cpu
+faiss-gpu
+annoy
+hnswlib
+
+# --- Classical ML ---
+scikit-learn
+xgboost
+lightgbm
+catboost
+statsmodels
+pgmpy
+pyod
+imbalanced-learn
+
+# --- Data / numerics ---
+numpy
+pandas
+scipy
+polars
+dask
+modin
+pyarrow
+duckdb
+sqlalchemy
+sqlmodel
+
+# --- Plotting / vis ---
+matplotlib
+seaborn
+plotly
+bokeh
+altair
+dash
+streamlit
+gradio
+
+# --- Image / video / audio ---
+pillow
+opencv-python
+opencv-contrib-python
+imageio
+albumentations
+librosa
+moviepy
+ffmpeg-python
+soundfile
+
+# --- NLP ---
+nltk
+spacy
+gensim
+textblob
+beautifulsoup4
+lxml
+
+# --- Web / API / serving ---
+requests
+urllib3
+httpx
+aiohttp
+fastapi
+uvicorn
+gunicorn
+flask
+django
+starlette
+pydantic
+pydantic-core
+
+# --- DevOps / observability ---
+pyyaml
+toml
+tomli
+tomli-w
+click
+typer
+rich
+tqdm
+loguru
+structlog
+sentry-sdk
+
+# --- Testing ---
+pytest
+pytest-cov
+hypothesis
+mock
+faker
+
+# --- Notebooks & experiment tracking ---
+jupyter
+notebook
+ipython
+ipykernel
+mlflow
+wandb
+tensorboard
+neptune
+clearml
+dvc
+zenml
+
+# --- Cloud SDKs ---
+boto3
+botocore
+google-cloud-storage
+google-cloud-aiplatform
+azure-identity
+azure-storage-blob
+
+# --- Security-relevant deps (often appear in ML stacks) ---
+cryptography
+pyjwt
+authlib
+oauthlib
+paramiko
+
+# --- Distributed / orchestration ---
+ray
+dask-ml
+celery
+prefect
+
+# --- Other commonly imported ---
+attrs
+dataclasses-json
+marshmallow
+jsonschema
+networkx
+sympy

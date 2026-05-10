@@ -1,0 +1,47 @@
+# Example: scan ML artifacts in a repo on every PR and push to main.
+# Drops findings into the GitHub Security → Code scanning tab via SARIF.
+
+name: ML Security Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write    # required for SARIF upload
+
+jobs:
+  ml-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run ML Guard
+        uses: ml-guard/scan-action@v1
+        with:
+          path: ./models
+          fail-on: critical
+          format: sarif
+          output: ml-guard.sarif
+          # Skip noisy fixtures inside the repo
+          exclude: 'tests/fixtures/**,docs/examples/**'
+
+      - name: Upload SARIF to GitHub Code Scanning
+        if: always()       # upload even when ml-guard exited non-zero
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ml-guard.sarif
+
+      - name: Generate SBOM for compliance evidence
+        if: github.event_name == 'push'
+        run: ml-guard sbom ./models -o ml-bom.json
+
+      - name: Upload SBOM as artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml-guard-sbom
+          path: ml-bom.json
+          retention-days: 90

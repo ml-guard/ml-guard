@@ -1,0 +1,174 @@
+# mlsupplychain — security & compliance scanner for ML pipelines.
+#
+# Установка (pure-Python, работает везде):
+#   pip install mlsupplychain
+#
+# С нативным ускорением (опционально, требует установленный Rust toolchain
+# при сборке из исходников; готовые wheels на Linux/macOS/Windows будут
+# содержать предкомпилированный модуль):
+#   pip install 'mlsupplychain[native]'
+#
+# Установка для разработки (с тестами и линтерами):
+#   pip install -e '.[dev]'
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlsupplychain"
+version = "0.1.0"
+description = "Security and compliance scanner for ML pipelines"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "ML Guard contributors" },
+]
+keywords = [
+    "ml", "security", "pickle", "safetensors", "onnx",
+    "sbom", "cyclonedx", "compliance", "eu-ai-act",
+    "vulnerability", "cve", "osv", "supply-chain",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
+
+# Минимальный стек зависимостей. Чем меньше — тем безопаснее security-tool:
+# каждая зависимость — потенциальная supply chain CVE (которую мы же ловим).
+#
+# Что мы НЕ тащим:
+#   • requests — нет сетевых запросов в pure-Python пути (CVE-update качается
+#     пользователем; live-osv опционально через [live]).
+#   • rich    — text-output собирается своими ANSI escape-ами (см. output/text.py).
+#   • onnx    — свой protobuf парсер в _protobuf.py (security-bypass risk).
+dependencies = [
+    "click>=8.1",
+    "pyyaml>=6.0",
+    "packaging>=21.0",      # PEP 440 version comparison — для CVE-matcher'а
+]
+
+[project.optional-dependencies]
+# Нативное ускорение через Rust-движок (опубликованные wheels уже включают
+# скомпилированный модуль; при сборке из sdist потребуется Rust toolchain).
+native = [
+    "mlsupplychain-engine>=0.1; platform_system != 'Emscripten'",
+]
+
+# Разработка
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.1",
+    "mypy>=1.5",
+    "build>=1.0",
+    "twine>=4.0",
+]
+
+# Опциональная интеграция с live OSV API (осv.dev) — на случай если
+# пользователь хочет всегда свежую базу за счёт сетевого доступа.
+# Не дефолт: продакшн — через bundled DB + cve-update.
+live = [
+    "requests>=2.31",
+]
+
+[project.urls]
+Homepage      = "https://github.com/ml-guard/ml-guard"
+Documentation = "https://github.com/ml-guard/ml-guard#readme"
+Repository    = "https://github.com/ml-guard/ml-guard"
+Issues        = "https://github.com/ml-guard/ml-guard/issues"
+Changelog     = "https://github.com/ml-guard/ml-guard/blob/main/CHANGELOG.md"
+
+[project.scripts]
+ml-guard = "ml_guard.cli:main"
+
+# ----------------------------------------------------------------------------
+# Сборка
+# ----------------------------------------------------------------------------
+
+[tool.setuptools.packages.find]
+include = ["ml_guard*"]
+exclude = ["tests*", "benchmarks*"]
+
+# Bundled mini OSV DB и template-файлы попадают в wheel.
+# Полную OSV-базу пользователь подгружает через `ml-guard cve-update`.
+[tool.setuptools.package-data]
+ml_guard = [
+    "data/osv-mini.sqlite",
+    "data/README.md",
+    "py.typed",
+]
+
+# ----------------------------------------------------------------------------
+# Tooling
+# ----------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short --strict-markers"
+markers = [
+    "slow: tests that take more than 1 second",
+    "integration: tests requiring real OSV dump (skipped if absent)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",   # pycodestyle / pyflakes
+    "I",             # isort
+    "B",             # flake8-bugbear
+    "UP",            # pyupgrade
+]
+ignore = [
+    "E501",   # line too long — мы используем 100 как мягкий лимит
+    "B008",   # function calls in defaults (полезно для click)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+"benchmarks/*" = ["B007"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_ignores = true
+no_implicit_optional = true
+check_untyped_defs = true
+# Сторонние без stubs — игнорируем; наш код типизирован.
+[[tool.mypy.overrides]]
+module = ["yaml", "packaging.*"]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["ml_guard"]
+omit = ["*/tests/*", "*/benchmarks/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
