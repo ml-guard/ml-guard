@@ -35,7 +35,6 @@ Safetensors *по дизайну* безопаснее pickle: нет испол
 from __future__ import annotations
 
 import json
-import math
 import re
 import struct
 from dataclasses import dataclass

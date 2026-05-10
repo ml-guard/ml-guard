@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
 from enum import Enum
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 import hashlib
 
 

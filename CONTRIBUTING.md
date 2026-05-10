@@ -17,10 +17,17 @@ pytest
 # Or, without pytest, use the bundled stdlib runner:
 python3 run_tests.py
 
-# Lint and types
+# Lint and types (advisory — won't fail CI, but new code shouldn't add issues)
 ruff check ml_guard tests
 mypy ml_guard
 ```
+
+**Note on style debt.** The v0.1.0 codebase has accumulated ~300 ruff
+issues (mostly unused imports and import-block ordering). These are
+**not** functional bugs. The CI `lint` job is currently advisory; we're
+closing the debt one PR at a time. When you touch a file, please leave
+it cleaner than you found it (`ruff check --fix path/to/file.py` is
+your friend). New code must pass ruff cleanly.
 
 ## Adding a new scanner
 

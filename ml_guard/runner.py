@@ -242,7 +242,6 @@ class Runner:
     def _walk(self, root: Path) -> Iterable[Path]:
         """rglob с фильтрацией ignore_dirs и пропуском симлинков."""
         # Используем os.walk для контроля над тем, в какие директории спускаться.
-        import os
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
             # Фильтруем in-place — это позволяет os.walk пропустить директории.
             dirnames[:] = [d for d in dirnames if d not in self.ignore_dirs]
