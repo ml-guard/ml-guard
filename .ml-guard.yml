@@ -1,0 +1,29 @@
+# Конфиг ml-guard для self-scan в CI.
+#
+# Этот репо содержит test fixtures для проверки сканеров — заведомо
+# вредоносные pickles, .env с примерами секретов, requirements.txt с
+# уязвимыми пакетами для CVE-проверки. Без exclusion ml-guard корректно
+# их детектит и валит CI с exit code 1.
+#
+# Этот файл говорит ml-guard "знаю что fixtures/ это test data, не флагай".
+
+exclude:
+  # Тестовые фикстуры — заведомо malicious by design
+  - 'tests/fixtures/**'
+  - 'tests/**'
+  # Stdlib-based test runner содержит inline test fixtures (фейковые
+  # секреты, malicious pickle bytes), которые тоже не должны флагаться
+  - 'run_tests.py'
+  # Скрипты для maintainer'ов содержат имена пакетов которые встречаются
+  # в OSV как malicious — это намеренные имена для тестов matcher'а
+  - 'scripts/popular-ml-packages.txt'
+  # Документация может содержать примеры secret-строк
+  - 'docs/**'
+  # Benchmarks могут генерировать тестовые pickle'и
+  - 'benchmarks/**'
+  # Сам Rust-engine не относится к security-сканированию
+  - 'rust_engine/target/**'
+
+# Минимальная severity для пометки CI fail.
+# Critical only — это значит "real RCE / leaked production credential".
+fail_on: critical

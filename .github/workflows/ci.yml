@@ -26,8 +26,14 @@ jobs:
         run: ml-guard scan ./tests --fail-on critical || true
 
   scan-on-pr:
-    # Демо-задача: показывает как использовать ml-guard в чужих репозиториях.
-    # В реальности это будет отдельный action (uses: ml-guard/scan-action@v1).
+    # Self-scan: каждый PR ml-guard сканирует свой же исходный код,
+    # чтобы доказать что в core-репо нет утечек секретов / уязвимых
+    # зависимостей / malicious pickles. fixtures и tests исключены через
+    # .ml-guard.yml в корне репо.
+    #
+    # Это также служит как demo workflow для пользователей — рекомендуемый
+    # способ интеграции в стороннем репо: см. ml-guard/scan-action на
+    # GitHub Marketplace (или просто `uses: ml-guard/scan-action@v1`).
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
@@ -37,9 +43,10 @@ jobs:
           python-version: "3.11"
       - name: Install ml-guard
         run: pip install -e .
-      - name: Scan models
+      - name: Scan repo
         run: |
           ml-guard scan . \
+            --config .ml-guard.yml \
             --format sarif \
             --output ml-guard.sarif \
             --fail-on critical
