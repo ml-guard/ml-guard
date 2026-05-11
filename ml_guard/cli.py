@@ -1,4 +1,4 @@
-"""CLI ml-guard — точка входа консольного инструмента."""
+"""ml-guard CLI — console entry point."""
 from __future__ import annotations
 
 import logging
@@ -12,10 +12,10 @@ from ml_guard.findings import Severity
 from ml_guard.runner import Runner
 from ml_guard.output import FORMATTERS
 
-# Импорт модулей-сканеров регистрирует их в default_registry через декоратор.
-# Каждый новый сканер ДОЛЖЕН быть импортирован здесь, иначе он не появится
-# в реестре. Это явное (а не «автомагическое») поведение нам подходит:
-# тесты могут импортировать только нужные сканеры.
+# Importing scanner modules registers them in default_registry via the
+# @register decorator. Every new scanner MUST be imported here, otherwise
+# it won't appear in the registry. We prefer this explicit registration
+# over auto-discovery: tests can import only the scanners they need.
 import ml_guard.scanners.pickle_scanner       # noqa: F401
 import ml_guard.scanners.safetensors_scanner  # noqa: F401
 import ml_guard.scanners.secret_scanner       # noqa: F401
@@ -119,8 +119,10 @@ def scan(
     from ml_guard.config import load_config
     cfg = load_config(explicit_path=config_path, scan_root=path)
 
-    # Если пользователь явно указал --cve-db, прокинем его через env.
-    # CveScanner уже умеет читать ML_GUARD_CVE_DB; так не нужно ломать его API.
+    # If the user explicitly passed --cve-db, propagate it via env so
+    # downstream scanner instances pick it up.
+    # CveScanner already reads ML_GUARD_CVE_DB; reusing the env var keeps
+    # the scanner's public API unchanged.
     if cve_db_path is not None:
         import os as _os
         _os.environ["ML_GUARD_CVE_DB"] = str(cve_db_path)
@@ -146,7 +148,7 @@ def scan(
     else:
         click.echo(rendered)
 
-    # Exit code: иерархия fail_on  =  CLI > config > default("critical")
+    # Exit code: fail_on precedence is CLI > config > default("critical")
     if fail_on is not None:
         threshold = Severity(fail_on)
     elif cfg.fail_on is not None:
@@ -412,16 +414,14 @@ def cve_info_cmd(db_path: Path | None, package: str | None, version: str | None)
                 click.echo(f"  {k:<25} {v}")
             return
 
-        # Запрос по пакету
+        # Per-package query
         if version is None:
-            # Без версии — показываем все advisories, в которых упомянут пакет
-            # (через ANY-match: используем version="0" чтобы _в большинстве случаев_
-            # выбрать только malicious; для полноты добавим перечисление affected
-            # ranges как контекст в выводе)
+            # No version given — list all advisories mentioning this package.
+            # We pass version="0" to find_advisories_for(); this matches every
+            # MAL-* (malicious package) entry and any CVE whose range starts
+            # at 0. The ANY-match disclaimer below tells the user they're
+            # seeing a superset.
             click.echo(f"All advisories mentioning '{package}' (use --version for matching):")
-            # Используем фактический запрос: версии 0 хватит для MAL,
-            # для CVE-диапазонов нужно перечисление — не делаем здесь, чтобы не
-            # тянуть SQL-инспекцию из публичного API. Подсказка:
             click.echo("  (this view shows packages where ANY version is malicious;")
             click.echo("   pin a version with --version to see range-matching CVEs)")
             advs = db.find_advisories_for(package, "0")

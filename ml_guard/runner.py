@@ -1,4 +1,4 @@
-"""Runner — обходит путь, выбирает сканеры через реестр, агрегирует находки."""
+"""Runner — walks the path, dispatches scanners via the registry, aggregates findings."""
 from __future__ import annotations
 
 import concurrent.futures
@@ -18,7 +18,7 @@ from ml_guard.config import Config
 log = logging.getLogger(__name__)
 
 
-# Директории, которые мы по умолчанию пропускаем — они не ML-артефакты.
+# Directories we skip by default — none of these hold ML artifacts.
 DEFAULT_IGNORE_DIRS: Set[str] = {
     ".git", ".hg", ".svn",
     "node_modules",
@@ -27,20 +27,20 @@ DEFAULT_IGNORE_DIRS: Set[str] = {
     "dist", "build", ".tox",
 }
 
-# Лимит размера файла для сканирования по умолчанию (можно переопределить).
+# Default per-file size cap. Override via config or --max-file-size.
 DEFAULT_MAX_FILE_SIZE = 4 * 1024 * 1024 * 1024  # 4 GiB
 
 
 @dataclass
 class ScanResult:
-    """Итог одного запуска сканирования."""
+    """Result of a single scan run."""
     findings: List[Finding] = field(default_factory=list)
     files_scanned: int = 0
     scanners_invoked: int = 0
     duration_seconds: float = 0.0
     errors: List[str] = field(default_factory=list)
 
-    # ---- удобные свёртки -----------------------------------------------
+    # ---- convenience accessors -----------------------------------------
     def by_severity(self, sev: Severity) -> List[Finding]:
         return [f for f in self.findings if f.severity == sev]
 
@@ -55,7 +55,7 @@ class ScanResult:
 
 
 class Runner:
-    """Запускает все сканеры для указанного пути."""
+    """Runs every applicable scanner against the given path."""
 
     def __init__(
         self,
@@ -70,13 +70,13 @@ class Runner:
     ) -> None:
         self.registry = registry or default_registry
         self.config = config or Config.empty()
-        # Конфиг даёт дефолты, явные аргументы их перекрывают.
+        # Config provides defaults; explicit constructor args override them.
         if self.config.max_file_size_mb is not None and max_file_size == DEFAULT_MAX_FILE_SIZE:
             max_file_size = self.config.max_file_size_mb * 1024 * 1024
         self.max_file_size = max_file_size
         self.ignore_dirs = ignore_dirs if ignore_dirs is not None else DEFAULT_IGNORE_DIRS
 
-        # Шаблоны: явные аргументы + из конфига (объединение, не замена)
+        # Patterns: explicit args are merged with config (union, not replace).
         merged_include = list(include_patterns) if include_patterns else []
         merged_include.extend(self.config.include)
         merged_exclude = list(exclude_patterns) if exclude_patterns else []
@@ -84,7 +84,7 @@ class Runner:
         self.include_patterns: List[str] = merged_include
         self.exclude_patterns: List[str] = merged_exclude
 
-        # selected_scanners: если явно задано — приоритет, иначе из конфига
+        # Scanner selection: explicit arg wins, else config, else "run all".
         if selected_scanners:
             self.selected_scanners: Optional[Set[str]] = set(selected_scanners)
         elif self.config.scanners:
@@ -92,14 +92,14 @@ class Runner:
         else:
             self.selected_scanners = None
 
-        # Параллелизм через потоки. По дефолту workers=1: наши сканеры —
-        # CPU-bound (regex / protobuf parse / pickle bytecode walk), и GIL
-        # делает многопоточность бесполезной или даже вредной (overhead
-        # ThreadPoolExecutor доминирует). Опция оставлена на случай:
-        #   • очень больших файлов на медленном I/O (NFS, S3-mount), где
-        #     read() реально блокируется — тогда workers=4..8 помогает;
-        #   • когда нативный Rust-движок собран и release'ит GIL.
-        # 1 = строго последовательно (детерминированный порядок findings).
+        # Threaded parallelism. Default workers=1: our scanners are CPU-bound
+        # (regex, protobuf parsing, pickle bytecode walks), and the GIL makes
+        # multi-threading either useless or counterproductive due to
+        # ThreadPoolExecutor overhead. We expose the knob anyway for two cases:
+        #   • huge files on slow I/O (NFS, S3-mount) where read() actually
+        #     blocks — workers=4..8 helps;
+        #   • when the native Rust engine is built and releases the GIL.
+        # workers=1 also guarantees deterministic finding order.
         if workers is None:
             workers = 1
         if workers < 1:
@@ -118,8 +118,8 @@ class Runner:
 
         files = self._collect_files(root)
 
-        # Тред-сейфный аккумулятор. .findings/.errors/.scanners_invoked/.files_scanned
-        # обновляются из воркер-потоков под одним lock'ом.
+        # Thread-safe accumulator. .findings/.errors/.scanners_invoked/
+        # .files_scanned are updated from worker threads under one lock.
         result_lock = threading.Lock()
 
         def worker(path: Path) -> None:
@@ -137,9 +137,8 @@ class Runner:
                 worker(p)
         else:
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.workers) as ex:
-                # list() — чтобы все исключения, если случатся, вылетели.
-                # Внутри worker() мы их уже ловим, так что futures не должны
-                # бросать; но fail-safe.
+                # list() materializes results so any exception surfaces here.
+                # worker() catches its own errors, but this is a fail-safe.
                 list(ex.map(worker, files))
 
         result.duration_seconds = time.monotonic() - started
@@ -149,12 +148,12 @@ class Runner:
     def _scan_one_file(
         self, path: Path, root: Path
     ) -> tuple[List[Finding], int, List[str]]:
-        """Сканирует один файл всеми применимыми сканерами.
+        """Scan one file with every applicable scanner.
 
-        Возвращает (findings, scanners_invoked, errors). НЕ модифицирует
-        self или общий ScanResult — это делает caller в worker(). Так мы
-        упрощаем тред-сейфность: всё, что считает поток, локально, и
-        сливается под одним lock'ом за один раз.
+        Returns (findings, scanners_invoked, errors). Does NOT mutate self
+        or the shared ScanResult — that's the caller's job in worker().
+        Keeping per-call state local simplifies thread safety: everything a
+        thread accumulates is local until merged under a single lock.
         """
         applicable = list(self.registry.applicable(path))
         if self.selected_scanners is not None:
@@ -192,14 +191,14 @@ class Runner:
     # ------------------------------------------------------------------
     def _collect_files(self, root: Path) -> List[Path]:
         """
-        Если root — файл, возвращаем [root] (фильтры не применяются — пользователь
-        указал точный путь).
-        Если директория — рекурсивно собираем файлы, пропуская:
-          • директории из ignore_dirs,
-          • файлы крупнее max_file_size,
-          • симлинки (защита от циклов),
-          • файлы, не совпадающие с include_patterns (если задан),
-          • файлы, совпадающие с exclude_patterns.
+        If root is a file, return [root] — filters don't apply because the
+        user pointed at an exact path.
+        If it's a directory, walk recursively and skip:
+          • directories in ignore_dirs,
+          • files larger than max_file_size,
+          • symlinks (cycle protection),
+          • files that don't match include_patterns (when set),
+          • files that match exclude_patterns.
         """
         if root.is_file():
             return [root]
@@ -220,13 +219,13 @@ class Runner:
         return out
 
     def _matches_filters(self, path: Path, root: Path) -> bool:
-        """True если файл проходит include/exclude по relative-path."""
+        """True if the file passes include/exclude against its relative path."""
         try:
             rel = path.relative_to(root).as_posix()
         except ValueError:
             rel = path.as_posix()
 
-        # exclude имеет приоритет
+        # exclude wins over include
         for pat in self.exclude_patterns:
             if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(path.name, pat):
                 return False
@@ -235,15 +234,16 @@ class Runner:
             for pat in self.include_patterns:
                 if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(path.name, pat):
                     return True
-            return False  # есть include, но не совпало
+            return False  # include set but nothing matched
 
         return True
 
     def _walk(self, root: Path) -> Iterable[Path]:
-        """rglob с фильтрацией ignore_dirs и пропуском симлинков."""
-        # Используем os.walk для контроля над тем, в какие директории спускаться.
+        """rglob equivalent with ignore_dirs filtering and symlink skipping."""
+        # os.walk is used (not Path.rglob) so we can prune ignored directories
+        # in-place via dirnames[:] = ... and avoid descending into them.
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-            # Фильтруем in-place — это позволяет os.walk пропустить директории.
+            # In-place filter lets os.walk skip the pruned dirs entirely.
             dirnames[:] = [d for d in dirnames if d not in self.ignore_dirs]
             for fn in filenames:
                 p = Path(dirpath) / fn

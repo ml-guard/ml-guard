@@ -1,14 +1,13 @@
 # mlsupplychain — security & compliance scanner for ML pipelines.
 #
-# Установка (pure-Python, работает везде):
+# Install (pure-Python, works everywhere):
 #   pip install mlsupplychain
 #
-# С нативным ускорением (опционально, требует установленный Rust toolchain
-# при сборке из исходников; готовые wheels на Linux/macOS/Windows будут
-# содержать предкомпилированный модуль):
+# With native acceleration (optional; wheels for Linux/macOS/Windows ship
+# the compiled module, sdist build requires a Rust toolchain):
 #   pip install 'mlsupplychain[native]'
 #
-# Установка для разработки (с тестами и линтерами):
+# For development:
 #   pip install -e '.[dev]'
 
 [build-system]
@@ -53,28 +52,30 @@ classifiers = [
     "Typing :: Typed",
 ]
 
-# Минимальный стек зависимостей. Чем меньше — тем безопаснее security-tool:
-# каждая зависимость — потенциальная supply chain CVE (которую мы же ловим).
-#
-# Что мы НЕ тащим:
-#   • requests — нет сетевых запросов в pure-Python пути (CVE-update качается
-#     пользователем; live-osv опционально через [live]).
-#   • rich    — text-output собирается своими ANSI escape-ами (см. output/text.py).
-#   • onnx    — свой protobuf парсер в _protobuf.py (security-bypass risk).
+# Minimal dependency footprint. Every dependency is a potential supply
+# chain CVE — which is exactly what this tool scans for. We deliberately
+# don't ship:
+#   • requests — no network calls on the default code path; the OSV DB
+#     is downloaded by the user via `cve-update`. Live mode is gated
+#     behind the [live] extra.
+#   • rich    — text output uses raw ANSI escapes (see output/text.py).
+#   • onnx    — bundled in-tree protobuf parser (_protobuf.py). Pulling
+#     the real `onnx` lib would mean the scanner's parser shares a CVE
+#     surface with the format it scans — a bad pattern.
 dependencies = [
     "click>=8.1",
     "pyyaml>=6.0",
-    "packaging>=21.0",      # PEP 440 version comparison — для CVE-matcher'а
+    "packaging>=21.0",      # PEP 440 version comparison for the CVE matcher
 ]
 
 [project.optional-dependencies]
-# Нативное ускорение через Rust-движок (опубликованные wheels уже включают
-# скомпилированный модуль; при сборке из sdist потребуется Rust toolchain).
+# Native acceleration via the Rust engine (published wheels include the
+# compiled module; sdist install requires a Rust toolchain).
 native = [
     "mlsupplychain-engine>=0.1; platform_system != 'Emscripten'",
 ]
 
-# Разработка
+# Development
 dev = [
     "pytest>=7.4",
     "pytest-cov>=4.1",
@@ -84,9 +85,9 @@ dev = [
     "twine>=4.0",
 ]
 
-# Опциональная интеграция с live OSV API (осv.dev) — на случай если
-# пользователь хочет всегда свежую базу за счёт сетевого доступа.
-# Не дефолт: продакшн — через bundled DB + cve-update.
+# Opt-in live OSV API access, for users who prefer always-fresh data over
+# the bundled / cve-update flow. Not the default: production runs use the
+# offline DB.
 live = [
     "requests>=2.31",
 ]
@@ -102,15 +103,15 @@ Changelog     = "https://github.com/ml-guard/ml-guard/blob/main/CHANGELOG.md"
 ml-guard = "ml_guard.cli:main"
 
 # ----------------------------------------------------------------------------
-# Сборка
+# Build
 # ----------------------------------------------------------------------------
 
 [tool.setuptools.packages.find]
 include = ["ml_guard*"]
 exclude = ["tests*", "benchmarks*"]
 
-# Bundled mini OSV DB и template-файлы попадают в wheel.
-# Полную OSV-базу пользователь подгружает через `ml-guard cve-update`.
+# Bundled mini OSV DB + template files ship in the wheel.
+# Full PyPI OSV coverage is downloaded by the user via `ml-guard cve-update`.
 [tool.setuptools.package-data]
 ml_guard = [
     "data/osv-mini.sqlite",
@@ -142,8 +143,8 @@ select = [
     "UP",            # pyupgrade
 ]
 ignore = [
-    "E501",   # line too long — мы используем 100 как мягкий лимит
-    "B008",   # function calls in defaults (полезно для click)
+    "E501",   # line too long — we use 100 as a soft limit
+    "B008",   # function calls in defaults (needed for click)
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -156,7 +157,7 @@ warn_return_any = true
 warn_unused_ignores = true
 no_implicit_optional = true
 check_untyped_defs = true
-# Сторонние без stubs — игнорируем; наш код типизирован.
+# Third-party packages without stubs — ignored; our own code is typed.
 [[tool.mypy.overrides]]
 module = ["yaml", "packaging.*"]
 ignore_missing_imports = true
