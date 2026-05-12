@@ -7,7 +7,7 @@ license = "Apache-2.0"
 
 [lib]
 name = "ml_guard_engine"
-# cdylib — для Python-расширения, rlib — для unit-тестов в Rust
+# cdylib for the Python extension, rlib for Rust unit tests
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

@@ -1,4 +1,4 @@
-"""Тесты новых возможностей Runner: include/exclude/selected_scanners + интеграция с конфигом."""
+"""Tests for Runner features: include/exclude/selected_scanners + config integration."""
 from __future__ import annotations
 
 import pickle
@@ -8,7 +8,7 @@ from ml_guard.config import Config, RuleOverride
 from ml_guard.findings import Severity
 from ml_guard.runner import Runner
 
-import ml_guard.scanners.pickle_scanner  # регистрирует pickle scanner  # noqa: F401
+import ml_guard.scanners.pickle_scanner  # registers pickle scanner  # noqa: F401
 
 
 class _Mal:
@@ -57,7 +57,7 @@ def test_include_pattern_limits_scope(tmp_path: Path):
 
 
 def test_exclude_takes_priority_over_include(tmp_path: Path):
-    """Если файл совпадает и с include и с exclude — исключаем."""
+    """If a file matches both include and exclude — exclude wins."""
     (tmp_path / "a.pkl").write_bytes(pickle.dumps(_Mal()))
     r = Runner(include_patterns=["*.pkl"], exclude_patterns=["a.pkl"])
     res = r.run(tmp_path)
@@ -65,7 +65,7 @@ def test_exclude_takes_priority_over_include(tmp_path: Path):
 
 
 def test_glob_matches_basename_too(tmp_path: Path):
-    """`--exclude '*.pkl'` без префикса директории — должно совпадать."""
+    """`--exclude '*.pkl'` without a directory prefix must still match."""
     sub = tmp_path / "deep" / "nested"
     sub.mkdir(parents=True)
     _evil(sub / "x.pkl")
@@ -82,7 +82,7 @@ def test_selected_scanners_unknown_name_yields_nothing(tmp_path: Path):
     _evil(tmp_path / "x.pkl")
     r = Runner(selected_scanners=["nonexistent"])
     res = r.run(tmp_path)
-    # Файл существует, но ни один сканер не выбран — files_scanned=0
+    # File exists but no applicable scanner is selected — files_scanned=0
     assert res.files_scanned == 0
     assert res.findings == []
 
@@ -95,7 +95,7 @@ def test_selected_scanners_pickle_works(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# Интеграция с конфигом
+# Config integration
 # ---------------------------------------------------------------------------
 
 def test_config_provides_default_excludes(tmp_path: Path):
@@ -109,7 +109,7 @@ def test_config_provides_default_excludes(tmp_path: Path):
 
 
 def test_cli_args_merge_with_config(tmp_path: Path):
-    """Явные exclude_patterns + config.exclude → объединяются (не перезаписываются)."""
+    """Explicit exclude_patterns + config.exclude → merge (not overwrite)."""
     cfg = Config(exclude=["scratch/*"])
     (tmp_path / "scratch").mkdir()
     (tmp_path / "tmp").mkdir()
@@ -118,23 +118,23 @@ def test_cli_args_merge_with_config(tmp_path: Path):
     _evil(tmp_path / "c.pkl")
     r = Runner(exclude_patterns=["tmp/*"], config=cfg)
     res = r.run(tmp_path)
-    assert res.files_scanned == 1  # только c.pkl
+    assert res.files_scanned == 1  # only c.pkl
 
 
 def test_config_rule_override_disables(tmp_path: Path):
-    """Rule override из конфига должен отбросить finding до агрегации."""
+    """A rule override from config should drop the finding before aggregation."""
     cfg = Config(rules={
         "pickle-dangerous-global": RuleOverride(disabled=True),
     })
     _evil(tmp_path / "x.pkl")
     r = Runner(config=cfg)
     res = r.run(tmp_path)
-    # Само правило отключено — критикалов быть не должно (но другие правила могут сработать)
+    # That specific rule is disabled — no findings from it (other rules may still fire)
     assert not any(f.rule_id == "pickle-dangerous-global" for f in res.findings)
 
 
 def test_config_rule_override_severity(tmp_path: Path):
-    """Rule override меняет severity без отбрасывания."""
+    """Rule override changes severity without dropping the finding."""
     cfg = Config(rules={
         "pickle-dangerous-global": RuleOverride(severity=Severity.LOW),
     })
@@ -147,9 +147,9 @@ def test_config_rule_override_severity(tmp_path: Path):
 
 
 def test_config_max_file_size_mb(tmp_path: Path):
-    """max_file_size_mb из конфига применяется как дефолт."""
+    """max_file_size_mb from config is applied as the default."""
     big = tmp_path / "huge.pkl"
-    # 1 MiB файла, но при лимите 0 MiB в конфиге он отбрасывается
+    # 1 MiB file, but with a 0 MiB limit in config it is skipped
     big.write_bytes(b"\x80\x04N." * 200_000)
     cfg = Config(max_file_size_mb=0)
     r = Runner(config=cfg)

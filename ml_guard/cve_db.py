@@ -1,31 +1,31 @@
-"""SQLite-индекс OSV vulnerabilities для оффлайн-проверок.
+"""SQLite-backed OSV vulnerability index for offline checks.
 
-Зачем оффлайн:
-  • Воспроизводимость: одни и те же входы → один и тот же отчёт. live OSV
-    меняется ежедневно, и два прогона CI на одном коде будут разными.
-  • Air-gapped окружения (банки, оборонка, регулируемые ML-команды) —
-    наша целевая аудитория. Live API там не работает.
-  • Скорость: ~50 пакетов в requirements.txt — это 50 HTTP-запросов в
-    лучшем случае, секунды задержки. SQLite по локальному файлу — миллисекунды.
-  • Атакоустойчивость: если osv.dev недоступен или скомпрометирован —
-    наш сканер не возвращает «всё ок» по умолчанию.
+Why offline:
+  • Reproducibility: same inputs → same report. Live OSV changes daily,
+    so two CI runs on the same code would diverge.
+  • Air-gapped environments (banks, defense, regulated ML teams) are our
+    target audience. Live APIs don't work there.
+  • Speed: ~50 packages in requirements.txt = 50 HTTP requests at best,
+    seconds of latency. SQLite over a local file = milliseconds.
+  • Resilience to attack: if osv.dev is offline or compromised, our
+    scanner doesn't default to "all clear".
 
-Так делают trivy, grype, osv-scanner — все они качают БД заранее.
+This is how trivy, grype, osv-scanner all work — pre-downloaded DB.
 
-Поток данных:
-  1. Пользователь делает `ml-guard cve-update https://osv-vulnerabilities.../all.zip`
-     или указывает локальный ZIP/директорию JSON.
-  2. Импортёр проходит по всем файлам, складывает в SQLite.
-  3. CVE scanner на запрос matches() мгновенно отдаёт совпадения.
+Data flow:
+  1. User runs `ml-guard cve-update https://osv-vulnerabilities.../all.zip`
+     or points at a local ZIP / JSON directory.
+  2. The importer iterates every file and writes rows to SQLite.
+  3. The CVE scanner answers matches() queries instantly from the index.
 
 OSV schema: https://ossf.github.io/osv-schema/
 
-Источники в текущем дампе (все pypi):
-  GHSA   — GitHub Security Advisories (основа), 5K записей, есть severity
-  PYSEC  — Python Software Foundation, 3.3K записей
-  MAL    — malicious package advisories (typosquatting и т.п.), 11K
+Sources in the current dump (all PyPI):
+  GHSA   — GitHub Security Advisories (the bulk), ~5K entries, with severity
+  PYSEC  — Python Software Foundation, ~3.3K entries
+  MAL    — malicious package advisories (typosquatting etc.), ~11K
   ECHO   — echo.guard re-builds, 15
-  OSV    — прочие, 8
+  OSV    — others, ~8
 """
 from __future__ import annotations
 
@@ -42,22 +42,22 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Дефолтное расположение БД
+# Default DB location
 # ---------------------------------------------------------------------------
 
 def default_db_path() -> Path:
-    """Куда класть БД по умолчанию.
+    """Where the DB lives by default.
 
-    Используем XDG_DATA_HOME для соответствия freedesktop.org. На macOS/
-    Linux это ~/.local/share, на Windows %LOCALAPPDATA% (не здесь — это
-    POSIX-default, но практично работает).
+    Follows XDG_DATA_HOME per freedesktop.org. On macOS/Linux that's
+    ~/.local/share. On Windows the POSIX default still works in practice,
+    though %LOCALAPPDATA% would be more idiomatic.
     """
     base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
     return Path(base) / "ml-guard" / "osv.db"
 
 
 # ---------------------------------------------------------------------------
-# Схема БД
+# DB schema
 # ---------------------------------------------------------------------------
 
 _SCHEMA_SQL = """
@@ -97,25 +97,25 @@ CREATE TABLE IF NOT EXISTS meta (
 
 
 # ---------------------------------------------------------------------------
-# Преобразование OSV JSON → row для SQLite
+# OSV JSON → SQLite row conversion
 # ---------------------------------------------------------------------------
 
-# Маппинг database_specific.severity → наш Severity-уровень (как строка,
-# чтобы не тащить enum в БД-слой).
+# Map database_specific.severity → our severity level (as string, to
+# avoid pulling the enum into the DB layer).
 _SEVERITY_NORMALIZE = {
     "CRITICAL":  "critical",
     "HIGH":      "high",
-    "MODERATE":  "medium",   # GHSA использует "MODERATE"
+    "MODERATE":  "medium",   # GHSA uses the spelling "MODERATE"
     "MEDIUM":    "medium",
     "LOW":       "low",
 }
 
 
 def _normalize_severity(advisory: Dict[str, Any]) -> Optional[str]:
-    """Достаём текстовый severity. Источники по приоритету:
-       1. database_specific.severity (GHSA — самый надёжный)
-       2. severity[*].score CVSS — парсим вручную и считаем уровень
-       3. None — для PYSEC/MAL/ECHO без severity
+    """Extract the severity text. Sources, in priority order:
+       1. database_specific.severity (GHSA — most reliable)
+       2. severity[*].score CVSS — hand-parsed
+       3. None — PYSEC/MAL/ECHO records without explicit severity
     """
     db = advisory.get("database_specific") or {}
     raw = db.get("severity")
@@ -124,22 +124,22 @@ def _normalize_severity(advisory: Dict[str, Any]) -> Optional[str]:
         if norm:
             return norm
 
-    # CVSS — берём первый, парсим Base Score из вектора. Полный CVSS-расчёт
-    # сложен, но для CVSSv3 можно просто посмотреть Impact/Exploitability
-    # компоненты. Для простоты тут не делаем — оставим это для отдельного
-    # хелпера если понадобится. CVSS-вектор есть, значит хотя бы LOW.
+    # CVSS — take the first entry and parse Base Score. Full CVSS scoring
+    # is involved; for CVSSv3 you can just inspect the Impact/Exploitability
+    # components. Skipped here for simplicity. The mere presence of a
+    # CVSS vector implies at least LOW.
     sev_list = advisory.get("severity") or []
     if sev_list:
-        return "medium"   # консервативный fallback: "что-то есть, не низкое"
+        return "medium"   # conservative fallback: "something is here, not nothing"
 
     return None
 
 
 def _is_malicious(advisory: Dict[str, Any]) -> bool:
-    """MAL- advisories обычно описывают полностью вредоносные пакеты.
+    """MAL-* advisories describe outright malicious packages.
 
-    Также проверяем `database_specific.malicious-packages-origins`, который
-    у GHSA-malware ставится явно.
+    We also check `database_specific.malicious-packages-origins`, which is
+    set explicitly on GHSA-malware records.
     """
     if (advisory.get("id") or "").startswith("MAL-"):
         return True
@@ -150,19 +150,19 @@ def _is_malicious(advisory: Dict[str, Any]) -> bool:
 
 
 def _is_withdrawn(advisory: Dict[str, Any]) -> bool:
-    """`withdrawn` — поле OSV-spec: дата, когда advisory было отозвано.
+    """`withdrawn` is an OSV-spec field: the date the advisory was withdrawn.
 
-    Если оно есть, advisory считается невалидным и его не стоит репортить
-    (но в БД мы храним для аудита: вдруг кто-то спросит, было ли
-    предупреждение раньше).
+    If set, the advisory is considered invalid and shouldn't be reported.
+    We still store it in the DB for audit purposes ("was there ever a
+    warning?").
     """
     return bool(advisory.get("withdrawn"))
 
 
 def _extract_advisory_row(advisory: Dict[str, Any]) -> Optional[Tuple]:
-    """Один OSV-объект → row для таблицы advisories.
+    """One OSV record → a row for the advisories table.
 
-    Возвращает None если запись непригодна (нет id или affected).
+    Returns None if the record is unusable (missing id or affected).
     """
     aid = advisory.get("id")
     if not aid:
@@ -171,9 +171,9 @@ def _extract_advisory_row(advisory: Dict[str, Any]) -> Optional[Tuple]:
     return (
         aid,
         (advisory.get("summary") or "").strip()[:500],
-        # details — обычно длинная маркдаун-простыня, нам она не нужна.
-        # summary хранит ту же суть в одну строку. Если кто-то очень захочет
-        # — может прочитать оригинал по references_json.
+        # `details` is usually a long markdown wall — we don't need it.
+        # `summary` carries the same gist in one line. Anyone who wants more
+        # can follow references_json.
         "",
         _normalize_severity(advisory),
         1 if _is_malicious(advisory) else 0,
@@ -189,11 +189,11 @@ def _extract_advisory_row(advisory: Dict[str, Any]) -> Optional[Tuple]:
 
 
 def _extract_affected_rows(advisory: Dict[str, Any]) -> Iterator[Tuple]:
-    """Один OSV-объект → много rows для таблицы affected (по одной на пакет).
+    """One OSV record → many rows for the affected table (one per package).
 
-    Дедуплицируем по package_name внутри одного advisory: некоторые OSV-записи
-    повторяют пакет в разных affected[] блоках (для разных range-stratagies),
-    мы агрегируем все ranges/versions в один row.
+    Dedup by package_name within a single advisory: some OSV records list
+    the same package in multiple affected[] blocks (different range
+    strategies). We aggregate ranges/versions into a single row.
     """
     aid = advisory.get("id")
     if not aid:
@@ -208,7 +208,7 @@ def _extract_affected_rows(advisory: Dict[str, Any]) -> Iterator[Tuple]:
         name = pkg.get("name")
         if not name:
             continue
-        # PyPI имена нормализуем к lowercase + dash (PEP 503).
+        # PyPI names: normalize to lowercase + dash (PEP 503).
         norm_name = _normalize_pypi_name(name)
         bucket = by_pkg.setdefault(norm_name, {"ranges": [], "versions": set()})
         for r in entry.get("ranges", []) or []:
@@ -226,18 +226,18 @@ def _extract_affected_rows(advisory: Dict[str, Any]) -> Iterator[Tuple]:
 
 
 def _normalize_pypi_name(name: str) -> str:
-    """PEP 503 normalization: lowercase + не-alnum/dot → dash, collapse ---."""
+    """PEP 503 normalization: lowercase + non-alnum/dot → dash, collapse ---."""
     import re
     return re.sub(r"[-_.]+", "-", name.lower())
 
 
 # ---------------------------------------------------------------------------
-# Public API: класс CveDatabase
+# Public API: CveDatabase class
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class Advisory:
-    """Финальная запись advisory, удобная для сканера."""
+    """Final advisory record, ready for the scanner."""
     id: str
     summary: str
     severity: Optional[str]    # "critical"|"high"|"medium"|"low"|None
@@ -249,9 +249,9 @@ class Advisory:
 
 
 class CveDatabase:
-    """Тонкая обёртка над SQLite.
+    """Thin wrapper around SQLite.
 
-    Использование:
+    Usage:
         db = CveDatabase(Path("osv.db"))
         db.import_zip(Path("all.zip"))
         for adv in db.find_advisories_for("transformers", "4.30.0"):
@@ -290,9 +290,9 @@ class CveDatabase:
     # ------------------------------------------------------------------
 
     def import_zip(self, zip_path: Path) -> Dict[str, int]:
-        """Импортирует все JSON из ZIP-архива OSV.
+        """Import all JSON from an OSV ZIP archive.
 
-        Возвращает статистику: {"imported": N, "skipped": M, "errors": K}.
+        Returns stats: {"imported": N, "skipped": M, "errors": K}.
         """
         with zipfile.ZipFile(zip_path, "r") as zf:
             members = [m for m in zf.namelist() if m.endswith(".json")]
@@ -302,7 +302,7 @@ class CveDatabase:
             )
 
     def import_dir(self, dir_path: Path) -> Dict[str, int]:
-        """Импортирует все JSON из директории."""
+        """Import all JSON files from a directory."""
         files = sorted(dir_path.rglob("*.json"))
 
         def _read():
@@ -319,10 +319,10 @@ class CveDatabase:
         items: Iterable[Tuple[str, bytes]],
         total_hint: int = 0,
     ) -> Dict[str, int]:
-        """Стримово импортирует пары (filename, raw_bytes).
+        """Stream-import (filename, raw_bytes) pairs.
 
-        Используем большую транзакцию + executemany — без этого 19K
-        INSERT'ов через autocommit будут идти 30+ секунд.
+        We use one big transaction + executemany — without this, 19K
+        INSERTs via autocommit would take 30+ seconds.
         """
         conn = self._connect()
         stats = {"imported": 0, "skipped": 0, "errors": 0}
@@ -342,9 +342,9 @@ class CveDatabase:
                 )
                 adv_batch.clear()
             if aff_batch:
-                # Сначала зачищаем старые записи по этим advisory_id —
-                # на случай повторного импорта обновлённой версии БД.
-                # advisory_ids это [a[0] for a in аffected_batch]
+                # Clear existing rows for these advisory_ids first —
+                # supports re-importing an updated dump cleanly.
+                # advisory_ids is [a[0] for a in affected_batch]
                 ids = list({a[0] for a in aff_batch})
                 conn.executemany(
                     "DELETE FROM affected WHERE advisory_id = ?",
@@ -380,7 +380,7 @@ class CveDatabase:
 
         _flush()
 
-        # Записываем мета-инфо: дата импорта, источник, количество.
+        # Store meta: import date, source, count.
         from datetime import datetime, timezone
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
@@ -392,9 +392,9 @@ class CveDatabase:
         )
         conn.commit()
 
-        # VACUUM после массового импорта высвобождает страницы из удалённых
-        # старых записей (когда мы re-imported существующие advisory_id).
-        # Стоит ~0.5s на 19K записей и снимает ~30% размера БД.
+        # VACUUM after bulk import reclaims pages from deleted old rows
+        # (e.g. when we re-imported existing advisory_ids). Costs ~0.5s on
+        # 19K records and saves ~30% of DB size.
         conn.execute("VACUUM")
 
         return stats
@@ -408,10 +408,10 @@ class CveDatabase:
         package_name: str,
         version: Optional[str] = None,
     ) -> List[Advisory]:
-        """Возвращает все advisories, задевающие этот пакет/версию.
+        """Return all advisories affecting this package/version.
 
-        Если version=None — возвращает все advisories для пакета.
-        Withdrawn-advisories пропускаются.
+        version=None returns every advisory for the package.
+        Withdrawn advisories are skipped.
         """
         from packaging.specifiers import InvalidSpecifier
         from packaging.version import InvalidVersion, Version
@@ -435,7 +435,7 @@ class CveDatabase:
             ranges = json.loads(ranges_json) if ranges_json else []
             versions = json.loads(versions_json) if versions_json else []
 
-            # Если версия не указана — возвращаем все advisories.
+            # No version given — return all advisories.
             if version is None:
                 results.append(_make_advisory(
                     aid, summary, sev, is_mal, aliases_json, refs_json,
@@ -443,7 +443,7 @@ class CveDatabase:
                 ))
                 continue
 
-            # Точечная проверка матча.
+            # Range-match check.
             if _version_matches(version, ranges, versions):
                 results.append(_make_advisory(
                     aid, summary, sev, is_mal, aliases_json, refs_json,
@@ -452,7 +452,7 @@ class CveDatabase:
         return results
 
     def stats(self) -> Dict[str, Any]:
-        """Сводка БД для диагностики и for-display."""
+        """DB summary for diagnostics and display."""
         conn = self._connect()
         cur = conn.execute("SELECT COUNT(*) FROM advisories")
         total = cur.fetchone()[0]
@@ -494,26 +494,26 @@ def _version_matches(
     ranges: List[Dict[str, Any]],
     explicit_versions: List[str],
 ) -> bool:
-    """Проверяет, попадает ли version в OSV-affected.
+    """Decide whether `version` lies inside any OSV-affected range.
 
-    Логика OSV (https://ossf.github.io/osv-schema/#affected-fields):
-      • Если есть `versions[]` И version в этом списке → match.
-      • Если есть `ranges[]` → проверяем каждый диапазон через events.
+    OSV logic (https://ossf.github.io/osv-schema/#affected-fields):
+      • If `versions[]` is present AND version is in that list → match.
+      • If `ranges[]` is present → check each range via its events.
 
-    Events в range — это упорядоченные точки:
-      {"introduced": "0"}      — баг внесён начиная с этой версии
-      {"fixed": "1.2.3"}       — починен в этой версии (баг до 1.2.3)
-      {"last_affected": "..."} — последняя задетая версия (баг до и включая)
-      {"limit": "..."}         — exclusive верхняя граница (редко)
+    Range events are ordered points:
+      {"introduced": "0"}      — bug introduced starting at this version
+      {"fixed": "1.2.3"}       — fixed in this version (bug exists below)
+      {"last_affected": "..."} — last affected version (bug exists up to & including)
+      {"limit": "..."}         — exclusive upper bound (rare)
 
-    Range «срабатывает», если version ≥ introduced И (version < fixed,
-    если fixed есть) И (version ≤ last_affected, если есть). Если в range
-    несколько пар introduced/fixed — это значит несколько отрезков (баг
-    внесён, починен, снова внесён); проверяем каждый отдельно.
+    A range "fires" when version >= introduced AND (version < fixed, if
+    fixed exists) AND (version <= last_affected, if present). If a range
+    has multiple introduced/fixed pairs, that's multiple segments (bug
+    introduced, fixed, introduced again); we check each separately.
     """
     from packaging.version import InvalidVersion, Version
 
-    # Точное совпадение по explicit-versions — без всякой интерпретации.
+    # Exact match against explicit versions[] — no interpretation needed.
     if explicit_versions and version in explicit_versions:
         return True
 
@@ -528,10 +528,10 @@ def _version_matches(
     for r in ranges:
         rtype = r.get("type")
         if rtype not in (None, "ECOSYSTEM", "SEMVER"):
-            # GIT и прочие — мы не пытаемся интерпретировать.
+            # GIT and friends — we don't try to interpret them.
             continue
 
-        # Разбираем events в список segments вида (introduced, fixed_or_None, last_affected_or_None).
+        # Parse events into segments: (introduced, fixed_or_None, last_affected_or_None).
         segments = _events_to_segments(r.get("events", []))
         for intro, fixed, last_aff in segments:
             if _is_in_segment(v, intro, fixed, last_aff):
@@ -541,12 +541,12 @@ def _version_matches(
 
 
 def _events_to_segments(events):
-    """Превращаем upstream events в список (introduced, fixed, last_affected).
+    """Turn upstream events into segments: (introduced, fixed, last_affected).
 
-    Каждый `introduced` событие открывает новый сегмент. Следующий `fixed`/
-    `last_affected`/`limit` его закрывает. Если новый `introduced` пришёл
-    без закрытия предыдущего — это значит сегмент открыт до бесконечности
-    (но такого практически не бывает в реальных OSV).
+    Each `introduced` event opens a new segment. The next `fixed`/
+    `last_affected`/`limit` closes it. If a new `introduced` arrives
+    without closing the previous segment, the old one extends to infinity
+    (practically never seen in real OSV data).
     """
     segments = []
     cur_intro = None
@@ -554,7 +554,7 @@ def _events_to_segments(events):
     cur_last = None
     for ev in events:
         if "introduced" in ev:
-            # Закрываем предыдущий, если был открыт
+            # Close the previous segment if one was open
             if cur_intro is not None:
                 segments.append((cur_intro, cur_fixed, cur_last))
             val = ev["introduced"]
@@ -566,7 +566,7 @@ def _events_to_segments(events):
         elif "last_affected" in ev:
             cur_last = _safe_version(ev["last_affected"])
         elif "limit" in ev:
-            # Trying to be conservative: treat limit как fixed.
+            # Trying to be conservative: treat limit as fixed.
             cur_fixed = _safe_version(ev["limit"])
     if cur_intro is not None:
         segments.append((cur_intro, cur_fixed, cur_last))
@@ -589,9 +589,9 @@ def _safe_version(s):
 def _is_in_segment(v, introduced, fixed, last_aff) -> bool:
     """v ∈ [introduced, fixed) ∪ [introduced, last_aff].
 
-    Если introduced=None — сегмент не валиден. Если ни fixed ни last_affected
-    не заданы — баг затрагивает все версии от introduced и выше (например,
-    у MAL пакетов).
+    introduced=None means the segment isn't valid. With neither fixed nor
+    last_affected set, the bug affects all versions from introduced onward
+    (typical for MAL packages).
     """
     if introduced is None:
         return False

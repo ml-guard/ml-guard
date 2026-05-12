@@ -1,25 +1,25 @@
-"""SBOM генератор — CycloneDX 1.5 JSON.
+"""SBOM generator — CycloneDX 1.5 JSON.
 
-CycloneDX (https://cyclonedx.org) — стандарт OWASP для машиночитаемых
-software bill of materials. Аудиторы под EU AI Act и Cyber Resilience Act
-ожидают именно его (или SPDX, но CycloneDX поддерживает ML-моделей лучше).
+CycloneDX (https://cyclonedx.org) is the OWASP standard for machine-readable
+software bills of materials. Auditors under EU AI Act and Cyber Resilience Act
+expect it (or SPDX, but CycloneDX handles ML models better).
 
-Что мы кладём в BOM:
+What we put in the BOM:
 
-  • metadata: tool=ml-guard, timestamp, описание сканирования
-  • components: каждая ML-артефакт (pickle / safetensors / onnx) — это
-    `library` или `machine-learning-model` со своим SHA-256, размером,
-    обнаруженным форматом
-  • vulnerabilities: каждый Finding с severity ≥ MEDIUM становится
-    отдельной vulnerability с rating (используем CVSS-like score)
+  • metadata: tool=ml-guard, timestamp, scan description
+  • components: each ML artifact (pickle / safetensors / onnx) becomes a
+    `library` or `machine-learning-model` with SHA-256, size, and
+    detected format
+  • vulnerabilities: every Finding with severity >= MEDIUM becomes a
+    vulnerability with rating (we emit CVSS-like scores)
 
-Минимальная схема CycloneDX 1.5 для ML:
+Minimal CycloneDX 1.5 schema for ML:
   https://cyclonedx.org/docs/1.5/json/
   https://cyclonedx.org/capabilities/mlbom/
 
-Мы сознательно НЕ покрываем 100% спецификации — только то, что нужно для
-прохождения аудита и интеграции с downstream-инструментами вроде
-Dependency-Track, OWASP DefectDojo, и github.com/CycloneDX/sbom-utility.
+We deliberately don't cover 100% of the spec — only what's needed to
+pass audit and integrate with downstream tooling like Dependency-Track,
+OWASP DefectDojo, and github.com/CycloneDX/sbom-utility.
 """
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# Маппинг наших findings на CycloneDX vulnerability rating
+# Map our findings onto CycloneDX vulnerability ratings
 # ---------------------------------------------------------------------------
 
 # CycloneDX severity values: critical, high, medium, low, info, none, unknown
@@ -62,8 +62,8 @@ _CDX_SCORE = {
     Severity.INFO:     0.0,
 }
 
-# Расширение → CycloneDX component type. У CycloneDX есть отдельный тип
-# `machine-learning-model` (с 1.5), и его поддерживают современные парсеры.
+# Extension → CycloneDX component type. CycloneDX has a dedicated
+# `machine-learning-model` type (since 1.5), supported by modern parsers.
 _EXT_TO_TYPE = {
     ".pkl":         "machine-learning-model",
     ".pickle":      "machine-learning-model",
@@ -77,11 +77,11 @@ _EXT_TO_TYPE = {
 
 
 # ---------------------------------------------------------------------------
-# Хелперы
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _sha256_file(path: Path, chunk: int = 1024 * 1024) -> Optional[str]:
-    """Стримово хэшируем файл; None при ошибке чтения."""
+    """Stream-hash the file; None on read error."""
     h = hashlib.sha256()
     try:
         with path.open("rb") as f:
@@ -93,7 +93,7 @@ def _sha256_file(path: Path, chunk: int = 1024 * 1024) -> Optional[str]:
 
 
 def _component_for_file(scan_root: Path, abs_path: Path) -> Optional[Dict[str, Any]]:
-    """Строим CycloneDX component для одного файла."""
+    """Build a CycloneDX component for one file."""
     if not abs_path.is_file():
         return None
     try:
@@ -132,11 +132,11 @@ _PKG_LINE_RE = re.compile(
 
 
 def _parse_requirements_files(scan_root: Path) -> List[Dict[str, Any]]:
-    """Превращаем найденные requirements.txt в CycloneDX components.
+    """Turn discovered requirements.txt files into CycloneDX components.
 
-    Это очень упрощённый парсер: достаточно для аудита, но не претендует
-    на полное соответствие PEP 508. Для полной поддержки извлечения
-    dependency-tree подключим pip-audit/uv в этап CVE checker.
+    Very simplified parser: good enough for audit, doesn't claim full
+    PEP 508 compliance. Full dependency-tree extraction would plug in
+    pip-audit/uv at the CVE checker stage.
     """
     out: List[Dict[str, Any]] = []
     if not scan_root.is_dir():
@@ -182,12 +182,12 @@ def _parse_requirements_files(scan_root: Path) -> List[Dict[str, Any]]:
 
 
 def _bom_ref_for_finding(scan_root: Path, finding: Finding) -> str:
-    """Привязываем vulnerability к компоненту через bom-ref."""
+    """Wire a vulnerability to a component via bom-ref."""
     return f"file:{finding.file}"
 
 
 # ---------------------------------------------------------------------------
-# Главная функция
+# Main function
 # ---------------------------------------------------------------------------
 
 def build_sbom(
@@ -198,31 +198,31 @@ def build_sbom(
     min_severity: Severity = Severity.MEDIUM,
 ) -> Dict[str, Any]:
     """
-    Строит CycloneDX 1.5 dict.
+    Build a CycloneDX 1.5 dict.
 
-    Параметры:
-      result            — ScanResult от Runner
-      scan_root         — корень сканирования (для относительных путей)
-      include_dependencies — парсить ли requirements.txt
-      min_severity      — какие findings включать как vulnerabilities
-                          (по умолчанию ≥ MEDIUM, чтобы не зашуметь)
+    Parameters:
+      result              — ScanResult from Runner
+      scan_root           — scan root (for relative paths)
+      include_dependencies — whether to parse requirements.txt
+      min_severity        — which findings to include as vulnerabilities
+                            (default >= MEDIUM, to keep noise down)
     """
     scan_root = scan_root.resolve()
 
-    # Собираем уникальные файлы из findings (плюс прицельно — top-level
-    # ML-артефакты в scan_root, чтобы BOM был полным даже при пустых
+    # Gather unique files from findings (plus targeted top-level ML
+    # artifacts in scan_root so the BOM is complete even when findings
     # findings).
     component_paths: Dict[str, Path] = {}
 
-    # Из findings
+    # From findings
     for f in result.findings:
         if not f.file:
             continue
         full = (scan_root / f.file).resolve()
         component_paths.setdefault(str(full), full)
 
-    # Прямой обход — добавляем известные ML-расширения, даже если
-    # сканеры на них не выдали findings (BOM должен быть полным).
+    # Direct traversal — add known ML extensions even when no scanner
+    # produced findings (BOM must be complete).
     if scan_root.is_dir():
         for fp in scan_root.rglob("*"):
             if fp.is_file() and fp.suffix.lower() in _EXT_TO_TYPE:
@@ -259,12 +259,12 @@ def build_sbom_json(
     scan_root: Path,
     **kwargs: Any,
 ) -> str:
-    """Удобная обёртка: возвращает уже-сериализованный JSON."""
+    """Convenience wrapper: returns already-serialized JSON."""
     return json.dumps(build_sbom(result, scan_root, **kwargs), indent=2, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
-# Вспомогательные строители
+# Helper builders
 # ---------------------------------------------------------------------------
 
 def _build_metadata(scan_root: Path, result: "ScanResult") -> Dict[str, Any]:

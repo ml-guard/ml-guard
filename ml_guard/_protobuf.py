@@ -1,44 +1,44 @@
-"""Минимальный protobuf wire-format reader.
+"""Minimal protobuf wire-format reader.
 
-ONNX-файлы — это сериализованный protobuf (`onnx.ModelProto`). Мы не хотим
-тащить полную библиотеку `onnx` или `protobuf` в security-сканер: парсер
-*того же формата*, что и атакуемая система, — это плохая практика
-(уязвимости парсера = уязвимости сканера). Поэтому читаем wire-format
-напрямую, на нескольких сотнях строк.
+ONNX files are serialized protobuf (`onnx.ModelProto`). We don't want to
+pull in the full `onnx` or `protobuf` library inside a security scanner:
+parsing the *same format* you're scanning is a known bad pattern (parser
+CVEs become scanner CVEs). So we read the wire format directly, in a
+few hundred lines.
 
-Wire-format protobuf, краткий обзор:
+Wire-format protobuf, brief overview:
 
-  Каждое поле = (tag, value), где tag = (field_number << 3) | wire_type.
+  Each field = (tag, value), where tag = (field_number << 3) | wire_type.
   Wire types:
-    0  VARINT     — целые: int32/int64/bool/enum, ZigZag для signed
+    0  VARINT     — integers: int32/int64/bool/enum, ZigZag for signed
     1  FIXED64    — double, fixed64, sfixed64
     2  LENGTH     — string, bytes, embedded message, packed repeated
     5  FIXED32    — float, fixed32, sfixed32
-    (3, 4 — устарели: groups)
+    (3, 4 — deprecated: groups)
 
-Мы безопасно читаем varint'ы и length-delimited блоки с жёсткими
-проверками границ; никаких рекурсивных аллокаций. Глубину вложенности
-ограничиваем — это защита от protobuf-bomb (как в JSON, миллион вложенных
-сообщений может съесть стек).
+We read varints and length-delimited blocks with strict bounds checks;
+no recursive allocations. Nesting depth is capped — defense against
+protobuf-bomb (analogous to JSON, a million nested messages can blow
+the stack).
 
-Подробности: https://protobuf.dev/programming-guides/encoding/
+Details: https://protobuf.dev/programming-guides/encoding/
 """
 from __future__ import annotations
 
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 
-# Жёсткие лимиты — protobuf-bomb защита.
+# Hard limits — protobuf-bomb defense.
 MAX_DEPTH = 32
-MAX_VARINT_BYTES = 10  # 64-битный varint не может быть длиннее
+MAX_VARINT_BYTES = 10  # a 64-bit varint cannot be longer
 
 
 class ProtobufError(Exception):
-    """Любая проблема при парсинге; включает offset и контекст."""
+    """Any parser problem; carries the offset and context."""
 
 
 # ---------------------------------------------------------------------------
-# Низкоуровневое чтение
+# Low-level reading
 # ---------------------------------------------------------------------------
 
 class _Cursor:
@@ -53,7 +53,7 @@ class _Cursor:
         return self.end - self.pos
 
     def read_varint(self) -> int:
-        """Читает unsigned varint (до 10 байт)."""
+        """Read an unsigned varint (up to 10 bytes)."""
         result = 0
         shift = 0
         bytes_read = 0
@@ -87,30 +87,30 @@ class _Cursor:
 
 
 def _decode_tag(tag: int) -> Tuple[int, int]:
-    """Из tag-varint достаём (field_number, wire_type)."""
+    """Extract (field_number, wire_type) from a tag varint."""
     return (tag >> 3, tag & 0x7)
 
 
 # ---------------------------------------------------------------------------
-# Высокоуровневое: parse_message → dict
+# High-level: parse_message → dict
 # ---------------------------------------------------------------------------
 #
-# Мы возвращаем "сырой" дерево: для каждого поля список значений (т.к. proto
-# поля могут повторяться). Значения — bytes, int, или вложенный dict.
-# Интерпретация конкретного поля (что int это enum, что bytes это строка)
-# делается в onnx_scanner.py по схеме ONNX.
+# Returns a "raw" tree: for each field a list of values (proto fields may
+# repeat). Values are bytes, int, or a nested dict. Per-field interpretation
+# (this int is an enum, these bytes are a string) is done in onnx_scanner.py
+# against the ONNX schema.
 
 def parse_message(data: bytes, depth: int = 0) -> Dict[int, List[Any]]:
     """
-    Парсит весь буфер как одно сообщение и возвращает dict {field_no: [values...]}.
+    Parse the whole buffer as a single message; return {field_no: [values...]}.
 
-    Реализован "плоско" без _Cursor: для protobuf-парсера accessor-overhead
-    в Python ощутимый — каждое чтение байта/varint'а становится 2-3
-    method-call'ами, и на 10K узлов это десятки ms. Тут мы держим pos как
-    локальную переменную и читаем напрямую из bytes-объекта; благодаря
-    этому ONNX-сканер на 10K узлов ускорился ~2x.
+    Implemented "flat", without _Cursor: in Python the accessor overhead
+    for a protobuf parser is significant — each byte/varint read would
+    become 2-3 method calls, and that adds up to tens of ms on 10K nodes.
+    Here we keep pos as a local variable and read directly from the bytes
+    object. The ONNX scanner on 10K nodes is ~2x faster as a result.
 
-    Корректность тождественна: те же лимиты глубины, те же ProtobufError'ы.
+    Correctness is identical: same depth limits, same ProtobufError raises.
     """
     if depth > MAX_DEPTH:
         raise ProtobufError(f"protobuf nesting too deep (>{MAX_DEPTH})")
@@ -120,7 +120,7 @@ def parse_message(data: bytes, depth: int = 0) -> Dict[int, List[Any]]:
     end = len(data)
 
     while pos < end:
-        # ---- inline read_varint для tag ----
+        # ---- inline read_varint for the tag ----
         result = 0
         shift = 0
         bytes_read = 0
@@ -144,7 +144,7 @@ def parse_message(data: bytes, depth: int = 0) -> Dict[int, List[Any]]:
             raise ProtobufError(f"invalid field_no=0 at offset {pos}")
 
         if wire_type == 0:    # VARINT
-            # ---- inline ещё один varint ----
+            # ---- inline another varint ----
             result = 0
             shift = 0
             bytes_read = 0
@@ -167,7 +167,7 @@ def parse_message(data: bytes, depth: int = 0) -> Dict[int, List[Any]]:
             v = data[pos:pos + 8]
             pos += 8
         elif wire_type == 2:  # LENGTH-delimited
-            # длина — varint
+            # length — varint
             result = 0
             shift = 0
             bytes_read = 0
@@ -201,7 +201,7 @@ def parse_message(data: bytes, depth: int = 0) -> Dict[int, List[Any]]:
         else:
             raise ProtobufError(f"unknown wire_type {wire_type} at offset {pos}")
 
-        # dict.setdefault быстрее, чем if/else
+        # dict.setdefault is slower than this two-step
         bucket = out.get(field_no)
         if bucket is None:
             out[field_no] = [v]
@@ -213,8 +213,8 @@ def parse_message(data: bytes, depth: int = 0) -> Dict[int, List[Any]]:
 
 def try_parse_nested(blob: bytes, depth: int = 0) -> Optional[Dict[int, List[Any]]]:
     """
-    Пытается разобрать blob как nested message. Возвращает None, если
-    blob — не валидный proto-message (т.е. это была обычная string/bytes).
+    Try to parse `blob` as a nested message. Returns None if `blob` isn't
+    a valid proto message (i.e. it was a plain string/bytes value).
     """
     try:
         return parse_message(blob, depth=depth + 1)
@@ -223,5 +223,5 @@ def try_parse_nested(blob: bytes, depth: int = 0) -> Optional[Dict[int, List[Any
 
 
 def bytes_to_str(b: bytes) -> str:
-    """Декодирует UTF-8 bytes (proto string) с заменой плохих байт."""
+    """Decode UTF-8 bytes (proto string) with replacement for bad bytes."""
     return b.decode("utf-8", errors="replace")

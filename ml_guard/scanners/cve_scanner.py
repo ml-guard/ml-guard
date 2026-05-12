@@ -1,24 +1,24 @@
-"""CVE scanner — оффлайн-проверка зависимостей по локальной OSV-базе.
+"""CVE scanner — offline dependency check against the local OSV database.
 
-Что мы делаем:
-  1. Находим файлы зависимостей (requirements.txt, requirements*.txt,
+What it does:
+  1. Find dependency manifests (requirements.txt, requirements*.txt,
      pyproject.toml, environment.yml, Pipfile.lock).
-  2. Парсим из них пары (package_name, version).
-  3. Запрашиваем `CveDatabase.find_advisories_for(name, version)`.
-  4. Каждую найденную уязвимость превращаем в `Finding`.
+  2. Parse each into (package_name, version) pairs.
+  3. Query `CveDatabase.find_advisories_for(name, version)`.
+  4. Turn each matching advisory into a `Finding`.
 
-Как сюда попадает БД:
-  • По умолчанию ищем БД в `XDG_DATA_HOME/ml-guard/osv.db` или указанном
-    через `--cve-db` пути.
-  • Если БД нет — выдаём один informational finding и возвращаем пустой
-    список. Это не error, потому что CVE-checker пользователь активирует
-    осознанно командой `ml-guard cve-update`.
+How the DB is located:
+  • Default location is `XDG_DATA_HOME/ml-guard/osv.db` or the path
+    supplied via `--cve-db`.
+  • If no DB exists we emit one informational finding and return.
+    Not an error — the CVE checker is opted into explicitly by running
+    `ml-guard cve-update`.
 
 Severity:
-  • Если advisory MAL-* (malicious package) → CRITICAL независимо от версии,
-    потому что это означает «пакет специально опасный, никакая версия не безопасна».
-  • Если advisory имеет database_specific.severity → используем его.
-  • Иначе MEDIUM (консервативный fallback: «уязвимость есть, серьёзность не указана»).
+  • Advisory MAL-* (malicious package) → CRITICAL regardless of version,
+    because it means "this package is intentionally malicious, no version is safe".
+  • Advisory has database_specific.severity → use it.
+  • Otherwise MEDIUM (conservative fallback: "vulnerability present, severity unspecified").
 """
 from __future__ import annotations
 
@@ -36,13 +36,13 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Парсинг файлов зависимостей
+# Dependency file parsing
 # ---------------------------------------------------------------------------
 
-# requirements.txt: `package==version` или `package>=version`. Берём только
-# pinned `==`, потому что для уязвимости нужна точная версия. `>=` — это
-# range, для которого CVE-проверка слишком фолз-позитивна (например,
-# `requests>=2.0` "теоретически уязвим" к каждой древней CVE).
+# requirements.txt: `package==version` or `package>=version`. We only take
+# pinned `==` — a vulnerability check needs an exact version. `>=` is a
+# range and the CVE check would be far too false-positive (e.g.
+# `requests>=2.0` is "theoretically vulnerable" to every ancient CVE).
 _REQ_PINNED_RE = re.compile(
     r"^\s*"
     r"(?P<name>[A-Za-z][A-Za-z0-9._\-]*)"
@@ -51,18 +51,18 @@ _REQ_PINNED_RE = re.compile(
     r"(?:\s*[#;].*)?$"
 )
 
-# Pipfile.lock — JSON. Pinned версии в формате `"==1.2.3"`.
+# Pipfile.lock — JSON. Pinned versions look like `"==1.2.3"`.
 _PIPLOCK_VERSION_RE = re.compile(r"==([\w.\-+!]+)")
 
 
 def _parse_requirements_txt(text: str) -> Iterable[Tuple[str, str]]:
-    """Извлекает (name, version) из requirements.txt-style файла.
+    """Extract (name, version) from a requirements.txt-style file.
 
-    Игнорирует:
-      • комментарии (#...)
+    Ignored:
+      • comments (#...)
       • -r includes
-      • опции pip (--hash, --index-url и т.п.)
-      • не-pinned (>=, <=, ~=, *)
+      • pip options (--hash, --index-url, etc.)
+      • non-pinned specifiers (>=, <=, ~=, *)
       • editable installs (-e ...)
     """
     for raw in text.splitlines():
@@ -75,19 +75,19 @@ def _parse_requirements_txt(text: str) -> Iterable[Tuple[str, str]]:
 
 
 def _parse_pyproject_toml(text: str) -> Iterable[Tuple[str, str]]:
-    """Простой парсер dependencies в pyproject.toml.
+    """Simple parser for dependencies in pyproject.toml.
 
-    Не используем tomllib чтобы не зависеть от 3.11+ (стдлиб) и от tomli
-    (не-стдлиб). Регуляркой ловим строки вида:
+    We avoid tomllib to keep working on Python <3.11 (stdlib), and avoid
+    tomli (non-stdlib). A regex picks up lines like:
 
         "package==1.2.3"
         'package == 1.2.3'
 
-    в массиве dependencies = [...]. Для security-сканера этого достаточно:
-    мы не строим dependency tree, мы просто ищем pinned версии.
+    inside dependencies = [...]. Good enough for a security scanner:
+    we don't build a dependency tree, we just find pinned versions.
     """
-    # Берём содержимое всех секций dependencies — лень парсить TOML
-    # рекурсивно, regex по строкам справляется.
+    # Take the content of every dependencies section — recursively parsing
+    # TOML is overkill, line-wise regex does the job.
     dep_lines: List[str] = []
     in_deps = False
     for line in text.splitlines():
@@ -106,7 +106,7 @@ def _parse_pyproject_toml(text: str) -> Iterable[Tuple[str, str]]:
             dep_lines.append(stripped)
 
     for line in dep_lines:
-        # ищем "name==version" внутри кавычек
+        # find "name==version" inside quotes
         m = re.search(
             r"['\"]([A-Za-z][A-Za-z0-9._\-]*)\s*==\s*([A-Za-z0-9._\-+!]+)['\"]",
             line,
@@ -116,7 +116,7 @@ def _parse_pyproject_toml(text: str) -> Iterable[Tuple[str, str]]:
 
 
 def _parse_pipfile_lock(text: str) -> Iterable[Tuple[str, str]]:
-    """Pipfile.lock — JSON формата pipenv. Извлекаем имена и pinned версии."""
+    """Pipfile.lock — pipenv JSON format. Extract names and pinned versions."""
     import json as _json
     try:
         data = _json.loads(text)
@@ -146,10 +146,10 @@ def _parse_environment_yml(text: str) -> Iterable[Tuple[str, str]]:
             continue
         if in_deps:
             if stripped.startswith("- "):
-                # `- package=1.2.3` или `- package=1.2.3=build`
+                # `- package=1.2.3` or `- package=1.2.3=build`
                 spec = stripped[2:].strip()
-                # Оставляем только то что выглядит как pypi-пакет
-                if "==" in spec:  # например `- pip:` секции
+                # Keep only entries that look like PyPI packages
+                if "==" in spec:  # e.g. `- pip:` sub-sections
                     name, _, ver = spec.partition("==")
                     yield name.strip(), ver.strip()
                 elif "=" in spec:
@@ -161,10 +161,10 @@ def _parse_environment_yml(text: str) -> Iterable[Tuple[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# Сканер
+# Scanner
 # ---------------------------------------------------------------------------
 
-# Файлы, которые мы умеем парсить. (basename → parser).
+# Manifests we know how to parse (basename → parser).
 _PARSERS = {
     "requirements.txt":     _parse_requirements_txt,
     "requirements-dev.txt": _parse_requirements_txt,
@@ -175,7 +175,7 @@ _PARSERS = {
     "environment.yaml":     _parse_environment_yml,
 }
 
-# Также любой `requirements*.txt`
+# Also matches any `requirements*.txt`
 _REQUIREMENTS_GLOB_RE = re.compile(r"^requirements.*\.txt$", re.IGNORECASE)
 
 
@@ -184,12 +184,12 @@ class CveScanner(Scanner):
     name = "cve"
     description = "Cross-checks pinned dependencies against the local OSV database"
 
-    # Параметры. CLI/Runner может задать кастомный путь к БД через
-    # переменную окружения ML_GUARD_CVE_DB. Опция CLI поверх — добавляется
-    # позже; пока — env-var подход.
+    # Parameters. CLI/Runner can override the DB path via the
+    # ML_GUARD_CVE_DB environment variable. An explicit --cve-db CLI flag
+    # propagates through the same env var.
     _env_db_var = "ML_GUARD_CVE_DB"
 
-    # Лимит размера: requirements.txt обычно меньше 1 МБ; больше — пропускаем.
+    # Size cap: requirements.txt is normally <1 MB; anything larger is skipped.
     MAX_FILE_BYTES = 4 * 1024 * 1024
 
     def __init__(self, db_path: Optional[Path] = None) -> None:
@@ -281,7 +281,7 @@ class CveScanner(Scanner):
                 scanner=self.name,
             )]
 
-        # Парсим файл
+        # Parse the file
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -297,20 +297,20 @@ class CveScanner(Scanner):
             return []
 
         findings: List[Finding] = []
-        # Дедуп. Два уровня:
-        #   1. (name, version, advisory_id) — защита от случайных дублей одного и
-        #      того же advisory.
-        #   2. (name, version, cve_alias)   — защита от того что разные базы
-        #      (GHSA + PYSEC) репортят одну и ту же CVE-2023-XXXX как два
-        #      разных advisory-документа. Оставляем первый, остальные —
-        #      сворачиваем.
+        # Two-level dedup:
+        #   1. (name, version, advisory_id) — guard against accidental
+        #      duplicates of the same advisory.
+        #   2. (name, version, cve_alias)   — guard against different
+        #      sources (GHSA + PYSEC) reporting the same CVE-2023-XXXX
+        #      as two distinct advisory documents. Keep the first, collapse
+        #      the rest.
         seen_advisory: set = set()
         seen_cve: set = set()
 
         for name, version in deps:
             advisories = db.find_advisories_for(name, version)
-            # Сортируем чтобы при равных CVE первым шёл GHSA — у него
-            # обычно есть severity и summary, у PYSEC чаще пусто.
+            # Sort so GHSA wins ties — GHSA usually carries severity and
+            # summary, while PYSEC is more often blank.
             advisories.sort(key=lambda a: (
                 0 if a.id.startswith("GHSA-") else
                 1 if a.id.startswith("PYSEC-") else
@@ -323,7 +323,7 @@ class CveScanner(Scanner):
                     continue
                 seen_advisory.add(key)
 
-                # CVE-дедуп
+                # CVE-level dedup
                 cve_aliases = [a for a in adv.aliases if a.startswith("CVE-")]
                 cve_dup = False
                 for cve in cve_aliases:

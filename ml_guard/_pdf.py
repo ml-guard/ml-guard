@@ -1,35 +1,35 @@
-"""Минимальный PDF 1.4 writer для compliance-отчётов.
+"""Minimal PDF 1.4 writer for compliance reports.
 
-Зачем своё, а не reportlab/fpdf:
-  • Compliance-отчёт хочется уметь генерировать в air-gapped окружении.
-  • Внешние PDF-библиотеки тащат сотни KB и имеют свою CVE-историю —
-    плохая идея для security-инструмента.
-  • Нам нужен ТОЛЬКО плоский текст: заголовки, абзацы, таблица findings.
-    Это ~200 строк PDF-генератора.
+Why our own, not reportlab/fpdf:
+  • We want to generate compliance reports in air-gapped environments.
+  • External PDF libs pull in hundreds of KB and have their own CVE
+    history — a bad fit for a security tool.
+  • We only need flat text: headings, paragraphs, a findings table.
+    That's ~200 lines of PDF generator code.
 
-Поддерживаемая структура PDF:
+Supported PDF structure:
   1. Header: %PDF-1.4
-  2. Объекты:
+  2. Objects:
      • Catalog (root)
-     • Pages — родитель страниц
-     • Page[1..N] — страницы со ссылкой на ресурсы и контент
-     • Font — встроенный Helvetica (Type1, base14 — не требует встраивания файла)
-     • Contents[1..N] — потоки рисования (FlateDecode)
-  3. xref-таблица с offset'ами объектов
+     • Pages — root of pages
+     • Page[1..N] — pages linking resources and content
+     • Font — built-in Helvetica (Type1, base14 — no embedding required)
+     • Contents[1..N] — drawing streams (FlateDecode)
+  3. xref table with object offsets
   4. trailer + startxref + %%EOF
 
-Шрифт: используем PDF base-14 (Helvetica/Helvetica-Bold). Они доступны в
-любом PDF-viewer'е без встраивания. Это ограничивает символы Latin-1 —
-для compliance-отчёта на английском этого достаточно. Юникод — TODO.
+Fonts: PDF base-14 (Helvetica/Helvetica-Bold). Available in every viewer
+without embedding. Restricts us to Latin-1 — fine for an English-language
+compliance report. Unicode support is TODO.
 
-Формат символов в content stream:
+Character format in content streams:
   BT      = begin text
   /F1 12 Tf = font 1 (Helvetica), size 12
   72 720 Td = move cursor to x=72, y=720 (PDF origin = bottom-left)
   (Hello) Tj = show text "Hello"
   ET      = end text
 
-Координатная сетка: точки PDF (1pt = 1/72"), letter = 612x792.
+Coordinate grid: PDF points (1pt = 1/72"), letter = 612x792.
 """
 from __future__ import annotations
 
@@ -38,39 +38,39 @@ from dataclasses import dataclass, field
 from typing import List, Sequence
 
 
-# Letter в точках PDF (8.5"x11")
+# Letter size in PDF points (8.5"x11")
 PAGE_WIDTH = 612
 PAGE_HEIGHT = 792
 
-# Поля
+# Margins
 MARGIN_LEFT = 54
 MARGIN_RIGHT = 54
 MARGIN_TOP = 60
 MARGIN_BOTTOM = 60
 
-# Шрифты base-14
+# Base-14 fonts
 FONT_REGULAR = "Helvetica"
 FONT_BOLD = "Helvetica-Bold"
 FONT_MONO = "Courier"
 
-# Шрифт-метрики Helvetica (приблизительные, для line-wrap).
-# Используем half-em-width = 0.5 * size в среднем; для прецизионности
-# можно подключить таблицу AFM, но для compliance-PDF это излишне.
+# Helvetica font metrics (approximate, for line-wrap).
+# Using half-em-width = 0.5 * size on average; for precision you could
+# wire up the AFM table, but that's overkill for a compliance PDF.
 def _approx_text_width(text: str, font: str, size: float) -> float:
-    """Приближённая ширина строки в точках."""
+    """Approximate string width in points."""
     avg_em = 0.55 if "Bold" in font else 0.50
     if "Courier" in font:
-        avg_em = 0.60     # моноширинный
+        avg_em = 0.60     # monospace
     return len(text) * avg_em * size
 
 
 # ---------------------------------------------------------------------------
-# Высокоуровневое API: PdfDocument
+# High-level API: PdfDocument
 # ---------------------------------------------------------------------------
 
 @dataclass
 class _TextRun:
-    """Одна команда отрисовки текста в content stream."""
+    """A single text-drawing command in a content stream."""
     x: float
     y: float
     text: str
@@ -85,7 +85,7 @@ class _Page:
 
 
 class PdfDocument:
-    """Сборщик многостраничного PDF.
+    """Multi-page PDF builder.
 
     API:
         doc = PdfDocument(title="...", author="ML Guard")
@@ -94,8 +94,8 @@ class PdfDocument:
         doc.table([[...], [...]])
         doc.save("report.pdf")
 
-    Внутри ведём курсор `_y` сверху вниз по текущей странице. Когда место
-    кончается — автоматически добавляем новую страницу.
+    We track a `_y` cursor top-down on the current page. When space runs
+    out, a new page is added automatically.
     """
 
     def __init__(self, title: str = "", author: str = "ml-guard") -> None:
@@ -105,7 +105,7 @@ class PdfDocument:
         self._cur: _Page = self._new_page()
         self._y: float = PAGE_HEIGHT - MARGIN_TOP
 
-    # -------------------- управление страницами --------------------
+    # -------------------- page management --------------------
 
     def _new_page(self) -> _Page:
         page = _Page()
@@ -117,7 +117,7 @@ class PdfDocument:
             self._cur = self._new_page()
             self._y = PAGE_HEIGHT - MARGIN_TOP
 
-    # -------------------- высокоуровневые блоки --------------------
+    # -------------------- high-level blocks --------------------
 
     def heading(self, text: str, size: int = 18, gap_below: float = 14.0) -> None:
         self._ensure_space(size + gap_below)
@@ -149,9 +149,9 @@ class PdfDocument:
 
     def keyvalue_block(self, pairs: Sequence[tuple], size: int = 10,
                        leading: float = 1.5, gap_below: float = 10.0) -> None:
-        """Печатает пары "ключ: значение" моноширинно — удобно для метаданных."""
+        """Print "key: value" pairs in monospace — handy for metadata."""
         line_h = size * leading
-        # Выравниваем по самому длинному ключу
+        # Align to the longest key
         key_width = max(len(k) for k, _ in pairs) if pairs else 0
         for k, v in pairs:
             self._ensure_space(line_h)
@@ -167,11 +167,11 @@ class PdfDocument:
         self._y -= gap_below
 
     def divider(self, gap_above: float = 4.0, gap_below: float = 4.0) -> None:
-        """Тонкая горизонтальная линия (точнее, ряд '-' нужной длины)."""
+        """A thin horizontal rule (technically a row of '-' chars)."""
         line_h = 12
         self._ensure_space(line_h + gap_above + gap_below)
         self._y -= gap_above
-        # рисуем "—" символами через моноширинный шрифт
+        # draw "—" chars using a monospace font
         approx_chars = (PAGE_WIDTH - MARGIN_LEFT - MARGIN_RIGHT) // (0.6 * 9)
         self._cur.runs.append(_TextRun(
             x=MARGIN_LEFT,
@@ -191,8 +191,8 @@ class PdfDocument:
         for i, line in enumerate(wrapped):
             self._ensure_space(line_h)
             if i == 0:
-                # WinAnsiEncoding не содержит '•' (U+2022); используем
-                # bullet-glyph 0x95 в WinAnsi — но безопаснее обычный '*'.
+                # WinAnsiEncoding doesn't have '•' (U+2022); we could use
+                # bullet glyph 0x95 in WinAnsi — but plain '*' is safer.
                 self._cur.runs.append(_TextRun(
                     x=MARGIN_LEFT,
                     y=self._y,
@@ -210,24 +210,24 @@ class PdfDocument:
             self._y -= line_h
         self._y -= gap_below
 
-    # -------------------- сериализация --------------------
+    # -------------------- serialization --------------------
 
     def to_bytes(self) -> bytes:
-        """Собираем готовый PDF."""
+        """Assemble the final PDF."""
         return _serialize(self)
 
 
 # ---------------------------------------------------------------------------
-# Утилиты
+# Utilities
 # ---------------------------------------------------------------------------
 
-# Часто встречающиеся не-Latin1 символы → их Latin1 эквиваленты.
-# Это позволяет нам не падать на тексте «по-человечески», но и не тащить
-# полный шрифт-эмбеддинг для редких символов.
+# Common non-Latin1 chars → their Latin1 equivalents.
+# Lets us handle "normal" text gracefully without dragging in a full
+# font-embedding stack for rare characters.
 _LATIN1_FALLBACKS = {
     "—": "-",   # em-dash
     "–": "-",   # en-dash
-    "•": "*",   # bullet (мы используем литералы внутри bullet(), но не везде)
+    "•": "*",   # bullet (we use literals inside bullet(), but not everywhere)
     "…": "...",
     """: '"',
     """: '"',
@@ -244,17 +244,17 @@ _LATIN1_FALLBACKS = {
 
 
 def _pdf_escape(s: str) -> str:
-    """Экранируем спецсимволы в литерале строки PDF: \\, (, ).
+    """Escape special chars in a PDF string literal: \\, (, ).
 
-    Также подставляем Latin-1-эквиваленты для частых не-Latin1 символов,
-    чтобы базовые шрифты Helvetica/Courier (с WinAnsiEncoding) могли их
-    отобразить без замены на '?'.
+    Also substitute Latin-1 equivalents for common non-Latin1 chars so the
+    base Helvetica/Courier fonts (with WinAnsiEncoding) can render them
+    without falling back to '?'.
     """
     out = []
     for ch in s:
         if ch in _LATIN1_FALLBACKS:
             ch = _LATIN1_FALLBACKS[ch]
-            # после подстановки ch может быть многосимвольным
+            # after substitution ch may be multi-char
             for c in ch:
                 out.append(c if c not in ("\\", "(", ")") else "\\" + c)
             continue
@@ -274,7 +274,7 @@ def _pdf_escape(s: str) -> str:
 
 
 def _wrap_line(line: str, max_width: float, font: str, size: float) -> List[str]:
-    """Простой word-wrap по приблизительной ширине."""
+    """Simple word-wrap by approximate width."""
     if not line.strip():
         return [""]
     words = line.split(" ")
@@ -287,9 +287,9 @@ def _wrap_line(line: str, max_width: float, font: str, size: float) -> List[str]
         else:
             if cur:
                 out.append(cur)
-            # Если одно слово длиннее строки — режем.
+            # If a single word is longer than the line — split it.
             if _approx_text_width(w, font, size) > max_width:
-                # очень длинная "строка" типа hash; режем по символам
+                # very long "word" like a hash; chunk character-wise
                 chunk = ""
                 for ch in w:
                     if _approx_text_width(chunk + ch, font, size) > max_width:
@@ -306,39 +306,39 @@ def _wrap_line(line: str, max_width: float, font: str, size: float) -> List[str]
 
 
 # ---------------------------------------------------------------------------
-# Низкоуровневая сериализация в PDF wire-format
+# Low-level serialization into PDF wire format
 # ---------------------------------------------------------------------------
 
 def _serialize(doc: PdfDocument) -> bytes:
     """
-    Строит PDF из объектов в порядке:
+    Builds the PDF objects in this order:
       1. Catalog
-      2. Pages (родитель)
+      2. Pages (root)
       3. Font /F1 (Helvetica)
       4. Font /F2 (Helvetica-Bold)
       5. Font /F3 (Courier)
-      6..: Page + Contents для каждой страницы (попарно)
+      6..: Page + Contents for each page (in pairs)
     """
-    # Собираем body как список (object_number, raw_bytes).
+    # Collect body as a list of (object_number, raw_bytes).
     objects: List[bytes] = []
 
     def add(obj_bytes: bytes) -> int:
-        """Возвращает индекс объекта (1-based)."""
+        """Return the object's 1-based index."""
         objects.append(obj_bytes)
         return len(objects)
 
-    # 1. Catalog (placeholder, отредактируем после Pages)
+    # 1. Catalog (placeholder; fixed up after we know Pages)
     catalog_idx = add(b"")  # placeholder
 
     # 2. Pages (placeholder)
     pages_idx = add(b"")
 
-    # 3..5. Шрифты
+    # 3..5. Fonts
     f1_idx = add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>")
     f2_idx = add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>")
     f3_idx = add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>")
 
-    # 6.. Страницы
+    # 6.. Pages
     page_obj_indices: List[int] = []
 
     for page in doc._pages:
@@ -365,7 +365,7 @@ def _serialize(doc: PdfDocument) -> bytes:
         page_idx = add(page_obj)
         page_obj_indices.append(page_idx)
 
-    # Заполняем Pages и Catalog
+    # Fill in Pages and Catalog
     kids_str = " ".join(f"{i} 0 R" for i in page_obj_indices)
     objects[pages_idx - 1] = (
         f"<< /Type /Pages /Count {len(page_obj_indices)} /Kids [{kids_str}] >>"
@@ -374,18 +374,18 @@ def _serialize(doc: PdfDocument) -> bytes:
         f"<< /Type /Catalog /Pages {pages_idx} 0 R >>"
     ).encode("latin-1")
 
-    # Info-объект (метаданные PDF)
+    # Info object (PDF metadata)
     title = _pdf_escape(doc.title or "")
     author = _pdf_escape(doc.author or "")
     info_obj = f"<< /Title ({title}) /Author ({author}) /Producer (ml-guard) >>".encode("latin-1")
     info_idx = add(info_obj)
 
-    # ---------- Финальная сборка ----------
+    # ---------- Final assembly ----------
     out = bytearray()
     out += b"%PDF-1.4\n"
-    out += b"%\xe2\xe3\xcf\xd3\n"  # binary marker — указывает viewer'ам что файл не текст
+    out += b"%\xe2\xe3\xcf\xd3\n"  # binary marker — signals viewers the file is not text
 
-    offsets = [0]  # offsets[0] не используется (object 0 — free)
+    offsets = [0]  # offsets[0] is unused (object 0 is "free")
     for i, body in enumerate(objects, start=1):
         offsets.append(len(out))
         out += f"{i} 0 obj\n".encode("latin-1")
@@ -410,11 +410,11 @@ def _serialize(doc: PdfDocument) -> bytes:
 
 
 def _render_page_contents(page: _Page) -> bytes:
-    """Собираем content stream одной страницы."""
+    """Build a single page's content stream."""
     out: List[bytes] = []
     cur_color = None
     for run in page.runs:
-        # Цвет (rg = non-stroke RGB)
+        # Color (rg = non-stroke RGB)
         if cur_color != run.color:
             r, g, b = run.color
             out.append(f"{r:.3f} {g:.3f} {b:.3f} rg".encode("latin-1"))
@@ -436,9 +436,9 @@ def _render_page_contents(page: _Page) -> bytes:
 
 
 def _encode_pdf_string(s: str) -> bytes:
-    """Кодируем строку для литерала (...) в PDF: latin-1 + escape."""
+    """Encode a string for a PDF (...) literal: latin-1 + escape."""
     try:
         return s.encode("latin-1")
     except UnicodeEncodeError:
-        # Заменяем не-Latin1 символы
+        # Replace non-Latin1 characters
         return s.encode("latin-1", errors="replace")

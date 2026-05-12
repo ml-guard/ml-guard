@@ -1,4 +1,4 @@
-"""Тесты Runner — обход директорий, агрегация результатов."""
+"""Runner tests — directory walking and result aggregation."""
 from __future__ import annotations
 
 import pickle
@@ -7,7 +7,7 @@ from pathlib import Path
 from ml_guard.findings import Severity
 from ml_guard.runner import Runner, ScanResult, DEFAULT_IGNORE_DIRS
 
-# Импорт регистрирует pickle scanner в default_registry.
+# Import registers the pickle scanner in default_registry.
 import ml_guard.scanners.pickle_scanner  # noqa: F401
 
 
@@ -62,12 +62,12 @@ def test_run_directory_recursion(tmp_path: Path):
 
 
 def test_ignore_dirs(tmp_path: Path):
-    # .git/ должна игнорироваться
+    # .git/ should be ignored
     git_dir = tmp_path / ".git"
     git_dir.mkdir()
     _make_evil_pkl(git_dir / "evil.pkl")
     result = Runner().run(tmp_path)
-    # Не должны были даже увидеть файл
+    # We shouldn't have even seen the file
     assert result.files_scanned == 0
     assert not result.has_at_least(Severity.CRITICAL)
 

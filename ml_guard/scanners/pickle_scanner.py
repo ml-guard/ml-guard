@@ -1,22 +1,22 @@
-"""Pickle scanner — обнаружение вредоносного кода в pickle-файлах.
+"""Pickle scanner — detects malicious code in pickle files.
 
-Атака на pickle (CWE-502, "Insecure Deserialization") работает так:
-протокол pickle — это стек-машина с опкодами. Опкод REDUCE
-вызывает callable (взятый из стека) с аргументами (тоже со стека).
-GLOBAL/STACK_GLOBAL загружают callable по имени модуля и атрибута.
+The pickle deserialization vulnerability (CWE-502) works like this:
+the pickle protocol is a stack machine with opcodes. The REDUCE opcode
+calls a callable (taken from the stack) with arguments (also from the
+stack). GLOBAL/STACK_GLOBAL load a callable by module + attribute name.
 
-Поэтому достаточно увидеть пару (GLOBAL "os" "system", REDUCE) —
-и при torch.load() выполнится `os.system(...)`. Никакого ML.
+So seeing the pair (GLOBAL "os" "system", REDUCE) is enough — calling
+torch.load() on the file will execute `os.system(...)`. No ML required.
 
-Наш сканер НЕ ВЫПОЛНЯЕТ pickle. Мы только парсим опкоды и
-проверяем, какие глобалы загружаются. Это безопасно по построению.
+This scanner NEVER executes pickle. We only parse opcodes and check
+which globals get loaded. Safe by construction.
 
-Стратегия:
-  1. pickletools.genops() даёт поток (opcode, arg, position) — это часть
-     stdlib, вылизана годами, не имеет surface для атак.
-  2. Отслеживаем стек GLOBAL'ов: если REDUCE/BUILD/INST вызывает
-     известно-опасный callable — Finding с severity по таблице.
-  3. Не-известно-опасные модули, не относящиеся к ML, повышают severity.
+Strategy:
+  1. pickletools.genops() yields a (opcode, arg, position) stream — it's
+     part of the stdlib, battle-tested for years, no attack surface itself.
+  2. Track the GLOBAL stack: if REDUCE/BUILD/INST invokes a known
+     dangerous callable, emit a Finding at the appropriate severity.
+  3. Unknown-but-non-ML modules raise severity by themselves.
 """
 from __future__ import annotations
 
@@ -30,11 +30,11 @@ from ml_guard.findings import Finding, Severity
 from ml_guard.scanners import Scanner, register
 
 # --------------------------------------------------------------------------
-# Базы знаний: что мы считаем опасным
+# Knowledge base: what we consider dangerous
 # --------------------------------------------------------------------------
 
-# Эти callable'ы при вызове через REDUCE дают RCE — сразу critical.
-# Формат: (module, qualname). Имя модуля — в pickle-нотации.
+# These callables, when invoked via REDUCE, give RCE — always critical.
+# Tuple format: (module, qualname). Module name in pickle notation.
 _RCE_CALLABLES: Set[Tuple[str, str]] = {
     ("os", "system"),
     ("os", "popen"),
@@ -53,12 +53,12 @@ _RCE_CALLABLES: Set[Tuple[str, str]] = {
     ("subprocess", "check_output"),
     ("subprocess", "getoutput"),
     ("subprocess", "getstatusoutput"),
-    ("commands", "getoutput"),       # Python 2, всё ещё встречается
+    ("commands", "getoutput"),       # Python 2, still seen in old pickles
     ("builtins", "eval"),
     ("builtins", "exec"),
     ("builtins", "compile"),
     ("builtins", "__import__"),
-    ("__builtin__", "eval"),         # Python 2 имя
+    ("__builtin__", "eval"),         # Python 2 name
     ("__builtin__", "exec"),
     ("__builtin__", "compile"),
     ("__builtin__", "__import__"),
@@ -67,14 +67,14 @@ _RCE_CALLABLES: Set[Tuple[str, str]] = {
     ("runpy", "_run_code"),
     ("pty", "spawn"),
     ("platform", "popen"),
-    ("ctypes", "CDLL"),              # загрузка нативной библиотеки — RCE
+    ("ctypes", "CDLL"),              # loading a native lib = RCE
     ("ctypes", "WinDLL"),
     ("ctypes", "OleDLL"),
     ("ctypes", "PyDLL"),
 }
 
-# Подозрительные модули — даже без RCE намекают на эксфильтрацию/networking.
-# Тензору они не нужны.
+# Suspicious modules — no direct RCE but hint at exfiltration/networking.
+# A tensor file has no business importing these.
 _SUSPICIOUS_MODULES: Set[str] = {
     "socket",
     "urllib",
@@ -90,18 +90,18 @@ _SUSPICIOUS_MODULES: Set[str] = {
     "shutil",          # rmtree, copy
     "tempfile",
     "webbrowser",
-    "marshal",         # ещё одна сериализация-через-исполнение
+    "marshal",         # another "serialization via execution"
     "code",            # interactive interpreter
     "codeop",
-    "subprocess",      # уже в RCE, но сами импорты тоже отметим
-    "pickle",          # рекурсивный pickle.loads — тревога
+    "subprocess",      # already in RCE set; we still flag the import itself
+    "pickle",          # recursive pickle.loads is alarming
     "pickletools",
     "_pickle",
 }
 
-# Модули, типичные для ML-весов — их мы не считаем подозрительными.
-# (Сами они безопасны, опасны только конкретные callable из них —
-# но в ML-pickle мы их вообще не ожидаем как RCE-вектор.)
+# Modules typical for ML weights — not flagged as suspicious.
+# (The modules themselves are safe; only specific callables would be
+# dangerous, and we don't expect them as RCE vectors in ML pickles.)
 _BENIGN_ML_MODULES: Set[str] = {
     "torch",
     "torch._utils",
@@ -121,12 +121,12 @@ _BENIGN_ML_MODULES: Set[str] = {
     "_codecs",
 }
 
-# Опкоды, которые сами по себе подозрительны (Python 2 наследие)
-_DEPRECATED_OPCODES: Set[str] = {"INST", "OBJ"}  # старые способы инстанцирования
+# Opcodes suspicious in themselves (Python 2 legacy)
+_DEPRECATED_OPCODES: Set[str] = {"INST", "OBJ"}  # legacy instantiation paths
 
 
 # --------------------------------------------------------------------------
-# Утилиты определения формата
+# Format-detection helpers
 # --------------------------------------------------------------------------
 
 _PICKLE_MAGIC_BYTES = (
@@ -141,7 +141,7 @@ _TORCH_ZIP_MEMBERS = ("data.pkl", "archive/data.pkl")  # PyTorch >=1.6 ZIP
 
 
 def _looks_like_pickle(path: Path) -> bool:
-    """Проверка: это похоже на pickle? Используется когда нет нужного расширения."""
+    """Does this file look like pickle? Used when the extension is ambiguous."""
     try:
         with path.open("rb") as f:
             head = f.read(2)
@@ -151,7 +151,7 @@ def _looks_like_pickle(path: Path) -> bool:
 
 
 def _is_torch_zip(path: Path) -> bool:
-    """PyTorch 1.6+ сохраняет .pt/.pth/.bin как ZIP с data.pkl внутри."""
+    """PyTorch 1.6+ saves .pt/.pth/.bin as a ZIP with data.pkl inside."""
     try:
         with zipfile.ZipFile(path, "r") as zf:
             names = zf.namelist()
@@ -161,25 +161,25 @@ def _is_torch_zip(path: Path) -> bool:
 
 
 # --------------------------------------------------------------------------
-# Ядро анализатора
+# Analyzer core
 # --------------------------------------------------------------------------
 
 class _PickleAnalyzer:
     """
-    Стримово проходим по опкодам и накапливаем findings.
+    Stream through opcodes and accumulate findings.
 
-    Особенности pickle protocol >=4 (Python 3.8+ default):
-      Загрузка `os.system` кодируется так:
+    Pickle protocol >=4 quirk (Python 3.8+ default):
+      Loading `os.system` is encoded as:
           SHORT_BINUNICODE "os"
           SHORT_BINUNICODE "system"
-          STACK_GLOBAL                       <-- module/name берутся со стека
-      Поэтому одного просмотра опкодов недостаточно — нужно эмулировать
-      стек строк, чтобы при STACK_GLOBAL восстановить пару (module, qualname).
+          STACK_GLOBAL                       <-- module/name pulled from stack
+      So an opcode-only scan misses these — we need to emulate a string
+      stack and recover (module, qualname) at STACK_GLOBAL time.
 
-    Эмуляция максимально упрощена: на стеке нас интересуют только строки
-    (UNICODE-варианты и SHORT_BINSTRING), а структурные опкоды (MARK, POP)
-    мы трактируем как «положили заглушку». Этого достаточно для
-    поиска RCE-вызовов; нам не нужно реконструировать тензоры.
+    The emulation is intentionally minimal: only strings (UNICODE variants
+    and SHORT_BINSTRING) actually matter; structural opcodes (MARK, POP)
+    push placeholders. Enough to spot RCE invocations; we don't need to
+    reconstruct tensors.
     """
 
     def __init__(self, source_label: str) -> None:
@@ -188,10 +188,10 @@ class _PickleAnalyzer:
         self._last_global: Optional[Tuple[str, str]] = None
         self._seen_modules: Set[str] = set()
         self._global_count = 0
-        # Очень упрощённый стек: только строки (для STACK_GLOBAL).
-        # Не-строки кладём как None (placeholder).
+        # Heavily simplified stack: strings only (for STACK_GLOBAL).
+        # Anything else is pushed as None (placeholder).
         self._stack: List[Optional[str]] = []
-        # Уже зарепортированные пары (module, qualname) — чтобы не дублировать
+        # Already-reported (module, qualname) pairs — avoid duplicates.
         self._reported_pairs: Set[Tuple[str, str]] = set()
 
     # ----- helpers ---------------------------------------------------------
@@ -208,7 +208,7 @@ class _PickleAnalyzer:
                 rule_id=rule_id,
                 severity=severity,
                 message=message,
-                file="",  # заполнит сканер
+                file="",  # filled in by the scanner caller
                 location=f"offset 0x{pos:x}" if pos is not None else "",
                 snippet=snippet,
                 metadata={"source": self.source_label},
@@ -221,13 +221,13 @@ class _PickleAnalyzer:
         self._seen_modules.add(module)
         self._global_count += 1
 
-        # Дедуп: если та же пара уже репортилась — выходим.
+        # Dedup: if we already reported this exact pair, skip.
         if (module, qualname) in self._reported_pairs:
             return
 
-        # Очевидно опасный callable — critical, даже без REDUCE
-        # (REDUCE может последовать дальше; даже сам импорт RCE-функции
-        # в pickle — серьёзный red flag).
+        # Obviously-dangerous callable — critical, even without REDUCE
+        # (REDUCE may follow; importing an RCE function in pickle is
+        # already a strong red flag).
         if (module, qualname) in _RCE_CALLABLES:
             self._reported_pairs.add((module, qualname))
             self._add(
@@ -240,7 +240,7 @@ class _PickleAnalyzer:
             )
             return
 
-        # Подозрительный модуль (networking, shutil, etc.) — high
+        # Suspicious module (networking, shutil, etc.) — high
         if module in _SUSPICIOUS_MODULES or any(
             module.startswith(m + ".") for m in _SUSPICIOUS_MODULES
         ):
@@ -255,8 +255,7 @@ class _PickleAnalyzer:
             )
             return
 
-        # Не-ML модуль — medium (heads-up)
-        # Берём топ-уровень модуля для проверки.
+        # Non-ML module — medium (heads-up). Compare top-level package name.
         top = module.split(".")[0]
         if top not in {m.split(".")[0] for m in _BENIGN_ML_MODULES}:
             self._reported_pairs.add((module, qualname))
@@ -269,9 +268,9 @@ class _PickleAnalyzer:
             )
 
     def _on_reduce(self, pos: Optional[int]) -> None:
-        # REDUCE = вызов последнего callable с аргументами со стека.
-        # Если последний global был опасным, это уже зафиксировано как critical.
-        # Здесь ничего не добавляем, чтобы не дублировать.
+        # REDUCE = call the last callable with args popped from the stack.
+        # If the last GLOBAL was dangerous, we've already emitted a critical
+        # finding. No need to double-report here.
         pass
 
     def _on_deprecated(self, opcode_name: str, pos: Optional[int]) -> None:
@@ -284,13 +283,13 @@ class _PickleAnalyzer:
         )
 
     # ----- main loop -------------------------------------------------------
-    # Опкоды, которые кладут строку на стек.
+    # Opcodes that push a string onto the stack.
     _STRING_PUSH_OPS = {
         "SHORT_BINUNICODE", "BINUNICODE", "BINUNICODE8", "UNICODE",
         "SHORT_BINSTRING", "BINSTRING", "STRING",
-        "SHORT_BINBYTES", "BINBYTES", "BINBYTES8",  # bytes тоже могут нести имя модуля
+        "SHORT_BINBYTES", "BINBYTES", "BINBYTES8",  # bytes may also carry a module name
     }
-    # Опкоды, которые кладут не-строковое значение — мы кладём None как placeholder.
+    # Opcodes pushing non-string values — we push None as a placeholder.
     _NONSTRING_PUSH_OPS = {
         "NONE", "NEWTRUE", "NEWFALSE",
         "BININT", "BININT1", "BININT2", "LONG", "LONG1", "LONG4", "INT",
@@ -300,15 +299,15 @@ class _PickleAnalyzer:
     }
 
     def analyze(self, data: bytes) -> List[Finding]:
-        """Прогоняем pickletools.genops по байтам. Не выполняем ничего."""
+        """Run pickletools.genops over the bytes. We execute nothing."""
         try:
             stream = io.BytesIO(data)
             for op, arg, pos in pickletools.genops(stream):
                 name = op.name
 
-                # ----- эмуляция стека (только для отслеживания строк) -----
+                # ----- stack emulation (only for tracking strings) ---------
                 if name in self._STRING_PUSH_OPS:
-                    # arg — строка или bytes; нормализуем к str
+                    # arg is a string or bytes; normalize to str
                     s: Optional[str]
                     if isinstance(arg, bytes):
                         try:
@@ -328,7 +327,7 @@ class _PickleAnalyzer:
                     if self._stack:
                         self._stack.pop()
 
-                # ----- интересные опкоды ---------------------------------
+                # ----- interesting opcodes -------------------------------
                 if name in ("GLOBAL", "INST"):
                     if isinstance(arg, str) and " " in arg:
                         module, _, qualname = arg.partition(" ")
@@ -337,14 +336,14 @@ class _PickleAnalyzer:
                         self._on_deprecated(name, pos)
 
                 elif name == "STACK_GLOBAL":
-                    # Берём две верхушки стека: [module, qualname]
+                    # Take the top two stack entries: [module, qualname]
                     if len(self._stack) >= 2:
                         qualname = self._stack[-1]
                         module = self._stack[-2]
                         if module is not None and qualname is not None:
                             self._on_global(module, qualname, pos)
                         else:
-                            # Не смогли восстановить — фиксируем сам факт STACK_GLOBAL
+                            # Couldn't recover the name — record the STACK_GLOBAL itself
                             self._add(
                                 rule_id="pickle-stack-global-opaque",
                                 severity=Severity.MEDIUM,
@@ -359,7 +358,7 @@ class _PickleAnalyzer:
                             message="STACK_GLOBAL on empty stack (malformed pickle)",
                             pos=pos,
                         )
-                    # Симулируем effect: pop 2, push 1 (callable, который мы трекаем как None)
+                    # Simulate effect: pop 2, push 1 (the callable, tracked as None)
                     if len(self._stack) >= 2:
                         self._stack.pop()
                         self._stack.pop()
@@ -377,7 +376,7 @@ class _PickleAnalyzer:
                     self._on_deprecated(name, pos)
 
         except Exception as e:  # noqa: BLE001
-            # Битый pickle ИЛИ попытка обмануть парсер — тоже находка.
+            # Malformed pickle OR an attempt to confuse the parser — also a finding.
             self._add(
                 rule_id="pickle-parse-error",
                 severity=Severity.MEDIUM,
@@ -389,7 +388,7 @@ class _PickleAnalyzer:
 
 
 # --------------------------------------------------------------------------
-# Сам сканер (плагин для реестра)
+# The scanner itself (registry plugin)
 # --------------------------------------------------------------------------
 
 @register
@@ -397,19 +396,19 @@ class PickleScanner(Scanner):
     name = "pickle"
     description = "Detects malicious opcodes and dangerous globals in pickle files"
 
-    # Расширения, которые точно содержат pickle (или могут — для torch zip).
+    # Extensions guaranteed (or likely, for torch zip) to contain pickle.
     _EXTENSIONS = {".pkl", ".pickle", ".pt", ".pth", ".bin", ".ckpt"}
 
-    # Лимиты — DoS-защита. Слишком большой файл — читаем не всё.
+    # Limits — DoS protection. Very large files are skipped wholesale.
     MAX_BYTES = 2 * 1024 * 1024 * 1024   # 2 GiB
-    MAX_INNER_PICKLE = 256 * 1024 * 1024  # 256 MiB на inner-pickle в ZIP
+    MAX_INNER_PICKLE = 256 * 1024 * 1024  # 256 MiB cap for an inner pickle in a ZIP
 
     def can_scan(self, path: Path) -> bool:
         if not path.is_file():
             return False
         if path.suffix.lower() in self._EXTENSIONS:
             return True
-        # Без расширения — пробуем по магии
+        # No extension — sniff for the magic bytes
         if path.suffix == "" and _looks_like_pickle(path):
             return True
         return False
@@ -424,11 +423,11 @@ class PickleScanner(Scanner):
                 scanner=self.name,
             )]
 
-        # 1) PyTorch ZIP-формат — внутри data.pkl
+        # 1) PyTorch ZIP format — data.pkl lives inside
         if zipfile.is_zipfile(path) and _is_torch_zip(path):
             return self._scan_torch_zip(path)
 
-        # 2) Сырой pickle
+        # 2) Raw pickle
         return self._scan_raw_pickle(path)
 
     # ------------------------------------------------------------------
@@ -472,11 +471,11 @@ class PickleScanner(Scanner):
     # ------------------------------------------------------------------
     def _analyze_bytes(self, data: bytes, location_prefix: Optional[str]) -> List[Finding]:
         """
-        Единая точка анализа байтов pickle. Если доступен нативный движок —
-        используем его; иначе — pure-Python `_PickleAnalyzer`.
+        Single entry point for analyzing pickle bytes. Uses the native
+        engine when available; falls back to the pure-Python _PickleAnalyzer.
 
-        location_prefix: если задан (например, имя ZIP-члена), добавляется
-        к каждому location.
+        location_prefix: if set (e.g. a ZIP member name), prepended to each
+        finding's location field.
         """
         if _HAS_RUST:
             try:
@@ -491,14 +490,14 @@ class PickleScanner(Scanner):
                         rule_id=d["rule_id"],
                         severity=sev,
                         message=d["message"],
-                        file="",  # заполнит сканер
+                        file="",  # filled in by the scanner caller
                         location=loc,
                         snippet=d.get("snippet", ""),
                     ))
                 return findings
             except Exception:  # noqa: BLE001
-                # Нативный путь не должен блокировать пользователя.
-                # Падаем обратно на Python.
+                # The native path must never break user-visible behavior.
+                # Fall through to Python on any failure.
                 pass
 
         analyzer = _PickleAnalyzer(source_label="<bytes>")
@@ -512,10 +511,10 @@ class PickleScanner(Scanner):
 
 
 # --------------------------------------------------------------------------
-# Опциональное Rust-ускорение
+# Optional Rust acceleration
 # --------------------------------------------------------------------------
-# Если собран ml_guard_engine (Rust), мы можем использовать его для горячего
-# пути на больших файлах. Чистый Python всегда работает; Rust — бонус.
+# If ml_guard_engine (Rust) is installed, use it on the hot path for large
+# files. Pure Python always works; Rust is a bonus.
 try:
     import ml_guard_engine  # type: ignore[import-not-found]
     _HAS_RUST = hasattr(ml_guard_engine, "scan_pickle_bytes")

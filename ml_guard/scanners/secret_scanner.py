@@ -1,24 +1,24 @@
-"""Secret scanner — поиск утечек ключей и токенов в текстовых артефактах.
+"""Secret scanner — finds leaked keys and tokens in text artifacts.
 
-Стратегия — двухслойная:
-  1. **Точные регексы** для известных провайдеров. Низкие false-positive,
-     высокий impact (AWS, GitHub, Slack, Stripe, OpenAI, ...).
-  2. **Энтропийный фильтр** для generic-секретов: ищем длинные base64/hex
-     строки с высокой энтропией Шеннона рядом с словом-маркером ("password",
-     "secret", "token", "key", "auth"). Это ловит самописные API-ключи,
-     которые не подпадают под p.1.
+Strategy is two-layered:
+  1. **Tight regexes** for known providers. Low false-positives, high
+     impact (AWS, GitHub, Slack, Stripe, OpenAI, ...).
+  2. **Entropy filter** for generic secrets: long base64/hex strings with
+     high Shannon entropy next to a marker word ("password", "secret",
+     "token", "key", "auth"). Catches hand-rolled API keys that wouldn't
+     match layer 1.
 
-Поддерживаемые форматы:
+Supported formats:
   • `.env`, `.env.*`
   • `.yaml`, `.yml`, `.json`, `.toml`, `.cfg`, `.ini`, `.conf`
-  • `.py` (исходники с захардкоженными ключами)
-  • `.ipynb` (Jupyter — распаковываем `cell.source` и `outputs`)
-  • `Dockerfile`, `docker-compose.yml` обрабатываются по расширению/имени
+  • `.py` (source with hardcoded keys)
+  • `.ipynb` (Jupyter — we unpack both `cell.source` and `outputs`)
+  • `Dockerfile`, `docker-compose.yml` are matched by extension/name
 
-Все findings содержат файл и номер строки. Для финдинга через регекс мы
-выводим тип провайдера; для энтропийного — слово-маркер и хвост строки
-(но НЕ сам секрет целиком — только первые/последние 4 символа, чтобы
-финдинг был разбираемым человеком, но не «пересолил» лог).
+Every finding includes file and line number. For a regex match we name
+the provider; for an entropy match, the marker word and the value tail
+(but NEVER the secret itself — only the first/last 4 chars, so the
+finding is human-readable without leaking the secret into logs).
 """
 from __future__ import annotations
 
@@ -34,17 +34,17 @@ from ml_guard.scanners import Scanner, register
 
 
 # ---------------------------------------------------------------------------
-# 1. Регексы известных провайдеров
+# 1. Provider-specific regexes
 # ---------------------------------------------------------------------------
-# Поля каждого правила:
-#   id       — стабильный rule_id для finding'а
-#   severity — наш уровень
-#   label    — человекочитаемое название
-#   pattern  — скомпилированный re.Pattern, должен иметь группу 0 = весь матч.
-#              Используем (?:...) внутри, чтобы группа 0 = весь секрет.
+# Fields per rule:
+#   id       — stable rule_id used in the Finding
+#   severity — our severity level
+#   label    — human-readable name
+#   pattern  — compiled re.Pattern; group 0 must equal the whole match.
+#              We use (?:...) internally so group 0 = the secret itself.
 #
-# Важно: предпочитаем строгие паттерны со специфичными префиксами и точными
-# длинами; так false-positive почти нулевой.
+# Important: prefer strict patterns with specific prefixes and exact
+# lengths; that's what keeps false-positives near zero.
 
 @dataclass(frozen=True)
 class _Rule:
@@ -60,14 +60,14 @@ _RULES: Tuple[_Rule, ...] = (
         id="secret-aws-access-key",
         severity=Severity.CRITICAL,
         label="AWS Access Key ID",
-        # AKIA... (long-lived) или ASIA... (session). 20 chars total, uppercase+digits.
+        # AKIA... (long-lived) or ASIA... (session). 20 chars total, uppercase+digits.
         pattern=re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
     ),
     _Rule(
         id="secret-aws-secret-near-key",
         severity=Severity.CRITICAL,
         label="AWS Secret Access Key (near-context match)",
-        # Срабатывает только когда явно подписано как "aws_secret_access_key"
+        # Only fires when explicitly tagged as "aws_secret_access_key"
         pattern=re.compile(
             r"(?i)aws[_-]?secret[_-]?access[_-]?key\s*[:=]\s*['\"]?([A-Za-z0-9/+=]{40})\b"
         ),
@@ -77,7 +77,7 @@ _RULES: Tuple[_Rule, ...] = (
         id="secret-github-pat",
         severity=Severity.CRITICAL,
         label="GitHub Personal Access Token",
-        # Префиксы введены в 2021: ghp_/gho_/ghu_/ghs_/ghr_, длина 36+ после префикса.
+        # Prefixes introduced in 2021: ghp_/gho_/ghu_/ghs_/ghr_, 36+ chars after prefix.
         pattern=re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b"),
     ),
     _Rule(
@@ -144,7 +144,7 @@ _RULES: Tuple[_Rule, ...] = (
         id="secret-jwt",
         severity=Severity.MEDIUM,
         label="JSON Web Token",
-        # eyJ — base64-prefix '{"' (JWT header). Три сегмента через точку.
+        # eyJ is the base64 prefix of '{"' (JWT header). Three dot-separated segments.
         pattern=re.compile(r"\beyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\b"),
     ),
     # --- Private keys ---
@@ -161,11 +161,11 @@ _RULES: Tuple[_Rule, ...] = (
 
 
 # ---------------------------------------------------------------------------
-# 2. Энтропийный поиск
+# 2. Entropy-based search
 # ---------------------------------------------------------------------------
 
-# Маркеры, рядом с которыми длинная высокоэнтропийная строка скорее всего
-# секрет. Регистронезависимо.
+# Marker words: a long high-entropy string next to one of these is most
+# likely a secret. Case-insensitive.
 _SECRET_MARKERS = (
     "password", "passwd", "pwd",
     "secret", "token", "auth",
@@ -174,20 +174,20 @@ _SECRET_MARKERS = (
     "session_key", "access_key",
 )
 
-# key=val или key: val синтаксис в .env/.yaml/.json/.ini.
-# Ключ ловим достаточно жадно (любой alnum/_/-), значение — кавычки или до конца строки.
+# key=val or key: val syntax in .env/.yaml/.json/.ini.
+# Key is greedy (any alnum/_/-); value is quoted or runs to end of line.
 _KV_RE = re.compile(
     r"(?P<key>[A-Za-z][A-Za-z0-9_\-\.]*)\s*[:=]\s*"
     r"(?P<quote>['\"]?)(?P<val>[^'\"\s,;{}\[\]]+)(?P=quote)"
 )
 
-# Минимальная длина строки для энтропийного анализа (короткие пароли всё равно
-# плохо ловятся энтропией — для них нужны словарные правила).
+# Minimum length for entropy analysis (short passwords aren't caught well
+# by entropy anyway — they need dictionary rules instead).
 _MIN_ENTROPY_LEN = 20
 
-# Порог Шеннона: эмпирически 4.0 для base64-like ключей.
-# Для строгого base64 теоретический максимум ~6 бит/символ; реальные ключи 4.5–5.5.
-# Для hex — максимум 4.0; ставим порог 3.5 для hex-режима ниже.
+# Shannon threshold: empirically 4.0 for base64-like keys.
+# Strict base64 max is ~6 bits/char; real keys land at 4.5-5.5.
+# Hex max is 4.0; we use 3.5 for the hex-only mode below.
 _BASE64_ENTROPY_THRESHOLD = 4.0
 _HEX_ENTROPY_THRESHOLD = 3.5
 
@@ -196,7 +196,7 @@ _HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
 
 
 def _shannon_entropy(s: str) -> float:
-    """Бит на символ. 0 для одинаковых букв, ~6 для случайного base64."""
+    """Bits per character. 0 for repeated letters, ~6 for random base64."""
     if not s:
         return 0.0
     freq: dict[str, int] = {}
@@ -212,12 +212,12 @@ def _shannon_entropy(s: str) -> float:
 
 def _looks_like_secret_value(val: str) -> Optional[str]:
     """
-    Проверяет, выглядит ли значение как секрет по форме и энтропии.
-    Возвращает кратное описание (для finding.message) или None.
+    Decide whether the value looks like a secret by shape and entropy.
+    Returns a short description (for finding.message) or None.
     """
     if len(val) < _MIN_ENTROPY_LEN:
         return None
-    # Hex: 32+ символа hex с энтропией ≥ 3.5
+    # Hex: 32+ hex chars with entropy >= 3.5
     if _HEX_RE.match(val) and len(val) >= 32:
         if _shannon_entropy(val) >= _HEX_ENTROPY_THRESHOLD:
             return f"high-entropy hex string (len={len(val)})"
@@ -233,10 +233,10 @@ def _is_secret_marker_key(key: str) -> bool:
     return any(m in k for m in _SECRET_MARKERS)
 
 
-# Очень быстрая (substring) проверка: нужно ли вообще запускать regex над
-# строкой. Если в lowercase-варианте строки нет ни одного маркер-слова,
-# энтропийный путь точно ничего не найдёт, и `_KV_RE.finditer` можно
-# пропустить. Дешевле любой regex.
+# Fast (substring) precheck: do we even need to run the regex on this
+# line? If the lowercased line contains no marker word, the entropy path
+# can't find anything and `_KV_RE.finditer` is skipped. Cheaper than
+# any regex.
 def _line_has_marker(line: str) -> bool:
     low = line.lower()
     for m in _SECRET_MARKERS:
@@ -246,16 +246,16 @@ def _line_has_marker(line: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Антипаттерны (заведомо НЕ секреты)
+# Anti-patterns (definitely NOT secrets)
 # ---------------------------------------------------------------------------
 
-# Очевидные плейсхолдеры в примерах кода/конфигов; их не репортим, чтобы
-# не раздражать пользователя.
+# Obvious placeholders in code/config examples; we suppress these to
+# avoid annoying the user.
 #
-# Подход: совпадение — целое слово (\b...\b), а не подстрока. Это важно:
-# реальный high-entropy ключ может случайно содержать "1234567" или "example"
-# как подстроку. Сигнал: PLACEHOLDER явно стоит как самостоятельное слово
-# или весь секрет составлен из повторений.
+# Approach: match a whole word (\b...\b), not a substring. This matters:
+# a real high-entropy key may incidentally contain "1234567" or "example"
+# as a substring. We only want to suppress when PLACEHOLDER is a standalone
+# word, or when the entire secret is composed of repetitions.
 _PLACEHOLDER_TOKENS_RE = re.compile(
     r"(?ix)\b(?:"
     r"  example | placeholder | redacted |"
@@ -265,17 +265,17 @@ _PLACEHOLDER_TOKENS_RE = re.compile(
     r")\b"
 )
 
-# Строки вроде "AAAAAAAA" или "xxxxxx" — заведомо не секреты.
+# Strings like "AAAAAAAA" or "xxxxxx" — definitely not secrets.
 _REPEATING_RE = re.compile(r"^(.)\1{7,}$")
 
-# Канонический пример AWS из доков AWS — буквальная строка, всегда плейсхолдер.
-# AWS использует именно этот ID во всех своих примерах последние 15 лет.
+# Canonical AWS example from AWS docs — literal string, always a placeholder.
+# AWS has used this exact ID in all their examples for the last 15 years.
 _AWS_DOC_EXAMPLES = {
     "AKIAIOSFODNN7EXAMPLE",
     "ASIAIOSFODNN7EXAMPLE",
 }
 
-# UUID — высокая энтропия по форме hex, но это идентификатор, не секрет.
+# UUID — high entropy due to hex shape, but identifier, not secret.
 _UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
@@ -294,10 +294,10 @@ def _is_obviously_placeholder(val: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Извлечение текста по типу файла
+# Text extraction by file type
 # ---------------------------------------------------------------------------
 
-# Расширения, которые сканер берёт в работу.
+# Extensions the scanner processes.
 _TEXT_EXTENSIONS = {
     ".env",
     ".yaml", ".yml",
@@ -309,7 +309,7 @@ _TEXT_EXTENSIONS = {
     ".tf", ".tfvars",       # Terraform
 }
 
-# Имена файлов без расширения, которые мы тоже сканируем.
+# Bare filenames (no extension) we also scan.
 _TEXT_BASENAMES = {
     "Dockerfile",
     "Makefile",
@@ -322,11 +322,12 @@ _TEXT_BASENAMES = {
 
 def _iter_lines_for_path(path: Path) -> Iterable[Tuple[int, str, str]]:
     """
-    Возвращает кортежи (line_no, source_label, line_text).
+    Yields tuples of (line_no, source_label, line_text).
 
-    Для .ipynb распаковывает ячейки и проходит по их `source`. line_no — номер
-    внутри cell'а; source_label — "cell N source" или "cell N output[k]".
-    Для остальных файлов source_label="" и line_no обычный.
+    For .ipynb, unpacks cells and iterates over their `source`. line_no is
+    the line number within the cell; source_label is "cell N source" or
+    "cell N output[k]". For other files, source_label="" and line_no is
+    just the file line number.
     """
     if path.suffix.lower() == ".ipynb":
         try:
@@ -362,7 +363,7 @@ def _iter_lines_for_path(path: Path) -> Iterable[Tuple[int, str, str]]:
                             yield li, f"cell {ci} output[{oi}]", line
         return
 
-    # Обычный текстовый файл.
+    # Plain text file.
     try:
         with path.open("r", encoding="utf-8", errors="replace") as f:
             for li, line in enumerate(f, start=1):
@@ -372,7 +373,7 @@ def _iter_lines_for_path(path: Path) -> Iterable[Tuple[int, str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# Сканер
+# The scanner
 # ---------------------------------------------------------------------------
 
 @register
@@ -380,11 +381,11 @@ class SecretScanner(Scanner):
     name = "secrets"
     description = "Detects hard-coded API keys, tokens, and high-entropy secrets in source/configs"
 
-    # Лимит на строку — чтобы регексы не подвешивали процесс на однобайтовых
-    # строках длиной в мегабайты (ipynb с base64-картинкой и т.п.).
+    # Per-line cap — keeps regexes from hanging the process on single-byte
+    # lines that are megabytes long (e.g. .ipynb with embedded base64 images).
     MAX_LINE_LEN = 16 * 1024
 
-    # Лимит на файл, выше — пропускаем.
+    # Per-file cap; larger files are skipped.
     MAX_FILE_BYTES = 32 * 1024 * 1024
 
     def can_scan(self, path: Path) -> bool:
@@ -412,14 +413,14 @@ class SecretScanner(Scanner):
             )]
 
         findings: List[Finding] = []
-        # Дедуп: одинаковая (rule_id, секрет-сниппет) на файл — один раз.
+        # Dedup: same (rule_id, secret-snippet) per file = report once.
         seen: set[Tuple[str, str]] = set()
 
         for line_no, src_label, line in _iter_lines_for_path(path):
             if not line:
                 continue
             if len(line) > self.MAX_LINE_LEN:
-                # Большие base64-блобы (картинки в ipynb) — режем
+                # Large base64 blobs (ipynb images) — clip them
                 line = line[: self.MAX_LINE_LEN]
 
             self._scan_line(line, line_no, src_label, findings, seen)
@@ -435,14 +436,14 @@ class SecretScanner(Scanner):
         findings: List[Finding],
         seen: set,
     ) -> None:
-        # Сюда складываем все секреты, найденные регексами на этой строке —
-        # потом не будем дублировать их через энтропию.
+        # Collect every secret matched by regex on this line — used to
+        # avoid the entropy path reporting it again.
         regex_hit_values: set[str] = set()
 
-        # 1) Регексы
+        # 1) Regex pass
         for rule in _RULES:
             for m in rule.pattern.finditer(line):
-                # Group 1, если есть; иначе вся группа 0.
+                # Group 1 if present, otherwise group 0.
                 secret = m.group(1) if rule.pattern.groups >= 1 and m.lastindex else m.group(0)
                 if _is_obviously_placeholder(secret):
                     continue
@@ -452,7 +453,7 @@ class SecretScanner(Scanner):
                 seen.add(key)
                 regex_hit_values.add(secret)
 
-                # Маскируем секрет: первые/последние 4 символа.
+                # Mask the secret: keep first/last 4 chars only.
                 redacted = self._redact(secret)
                 location = self._fmt_location(line_no, src_label)
                 findings.append(Finding(
@@ -464,10 +465,10 @@ class SecretScanner(Scanner):
                     snippet=redacted,
                 ))
 
-        # 2) Энтропия рядом с маркер-ключом
-        # Быстрый pre-check: если в строке нет ни одного маркер-слова, не
-        # тратим время на запуск _KV_RE.finditer (это в 10x ускоряет
-        # сканирование больших исходников без секретов).
+        # 2) Entropy near a marker key.
+        # Fast pre-check: if the line has no marker word, skip the
+        # _KV_RE.finditer call entirely (10x speedup on large secret-free
+        # source files).
         if not _line_has_marker(line):
             return
 
@@ -475,7 +476,7 @@ class SecretScanner(Scanner):
             key = m.group("key")
             val = m.group("val")
             if val in regex_hit_values:
-                # Уже нашли точным правилом — энтропия будет дублем
+                # Already matched by a strict rule — entropy would be a dup
                 continue
             if not _is_secret_marker_key(key):
                 continue

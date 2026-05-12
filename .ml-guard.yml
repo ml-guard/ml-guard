@@ -1,29 +1,29 @@
-# Конфиг ml-guard для self-scan в CI.
+# ml-guard self-scan configuration for CI.
 #
-# Этот репо содержит test fixtures для проверки сканеров — заведомо
-# вредоносные pickles, .env с примерами секретов, requirements.txt с
-# уязвимыми пакетами для CVE-проверки. Без exclusion ml-guard корректно
-# их детектит и валит CI с exit code 1.
+# This repo holds test fixtures for the scanners — intentionally malicious
+# pickles, .env files with example secrets, requirements.txt with vulnerable
+# packages for the CVE check. Without exclusions, ml-guard would correctly
+# detect them all and fail CI with exit code 1.
 #
-# Этот файл говорит ml-guard "знаю что fixtures/ это test data, не флагай".
+# This file tells ml-guard "I know these are test data, don't flag them".
 
 exclude:
-  # Тестовые фикстуры — заведомо malicious by design
+  # Test fixtures — malicious by design
   - 'tests/fixtures/**'
   - 'tests/**'
-  # Stdlib-based test runner содержит inline test fixtures (фейковые
-  # секреты, malicious pickle bytes), которые тоже не должны флагаться
+  # The stdlib test runner has inline fixtures (fake secrets, malicious
+  # pickle bytes) that must not be flagged either
   - 'run_tests.py'
-  # Скрипты для maintainer'ов содержат имена пакетов которые встречаются
-  # в OSV как malicious — это намеренные имена для тестов matcher'а
+  # Maintainer scripts contain package names that appear in OSV as
+  # malicious — they're deliberate, used by matcher tests
   - 'scripts/popular-ml-packages.txt'
-  # Документация может содержать примеры secret-строк
+  # Docs may contain example secret strings
   - 'docs/**'
-  # Benchmarks могут генерировать тестовые pickle'и
+  # Benchmarks can generate test pickles
   - 'benchmarks/**'
-  # Сам Rust-engine не относится к security-сканированию
+  # The Rust engine itself isn't subject to security scanning
   - 'rust_engine/target/**'
 
-# Минимальная severity для пометки CI fail.
-# Critical only — это значит "real RCE / leaked production credential".
+# Minimum severity that flips CI to fail.
+# critical only = real RCE / leaked production credential.
 fail_on: critical

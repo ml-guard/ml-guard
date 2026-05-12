@@ -1,4 +1,4 @@
-"""Форматтеры вывода для ScanResult."""
+"""Output formatters for ScanResult."""
 from ml_guard.output.text import format_text
 from ml_guard.output.json_fmt import format_json
 from ml_guard.output.sarif import format_sarif

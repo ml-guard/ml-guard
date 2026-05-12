@@ -1,12 +1,5 @@
 # ML Guard
 
-[![PyPI](https://img.shields.io/pypi/v/mlsupplychain?logo=pypi&logoColor=white)](https://pypi.org/project/mlsupplychain/)
-[![Python](https://img.shields.io/pypi/pyversions/mlsupplychain?logo=python&logoColor=white)](https://pypi.org/project/mlsupplychain/)
-[![Downloads](https://img.shields.io/pypi/dm/mlsupplychain?logo=pypi&logoColor=white)](https://pypi.org/project/mlsupplychain/)
-[![License](https://img.shields.io/github/license/ml-guard/ml-guard)](LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/ml-guard/ml-guard/ci.yml?branch=main&logo=github)](https://github.com/ml-guard/ml-guard/actions/workflows/ci.yml)
-[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-ML%20Guard%20Security%20Scan-blue?logo=github)](https://github.com/marketplace/actions/ml-guard-security-scan)
-
 > Security & compliance scanner for ML pipelines — `docker scan` for the ML world.
 
 ML Guard scans the artifacts your team ships — model weights, configs,

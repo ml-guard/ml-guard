@@ -1,4 +1,4 @@
-"""Тесты загрузчика конфигурации .ml-guard.yml."""
+"""Tests for the .ml-guard.yml config loader."""
 from __future__ import annotations
 
 import os
@@ -9,11 +9,11 @@ from ml_guard.findings import Finding, Severity
 
 
 # ---------------------------------------------------------------------------
-# Парсер YAML
+# YAML parser
 # ---------------------------------------------------------------------------
 
 def test_load_missing_returns_empty(tmp_path: Path):
-    """Нет ни конфига, ни env, ни автопоиска — пустой Config."""
+    """No config, no env, no autodiscovery — empty Config."""
     cfg = load_config(scan_root=tmp_path)
     assert cfg.fail_on is None
     assert cfg.include == []
@@ -33,7 +33,7 @@ def test_load_explicit_path(tmp_path: Path):
 
 
 def test_load_explicit_missing_raises(tmp_path: Path):
-    """Если пользователь явно указал путь и его нет — ошибка."""
+    """If the user explicitly points to a missing path → error."""
     try:
         load_config(explicit_path=tmp_path / "nope.yml")
     except FileNotFoundError:
@@ -48,7 +48,7 @@ def test_autodiscover_in_scan_root(tmp_path: Path):
 
 
 def test_autodiscover_walks_up(tmp_path: Path):
-    """Конфиг в корне монорепо подхватывается из под-директории."""
+    """A config at the monorepo root is picked up from a subdirectory."""
     (tmp_path / ".ml-guard.yaml").write_text("fail_on: low\n")
     sub = tmp_path / "models" / "v2"
     sub.mkdir(parents=True)
@@ -57,7 +57,7 @@ def test_autodiscover_walks_up(tmp_path: Path):
 
 
 def test_env_override(tmp_path: Path, monkeypatch=None):
-    """$ML_GUARD_CONFIG имеет приоритет над автопоиском."""
+    """$ML_GUARD_CONFIG takes precedence over autodiscovery."""
     p = tmp_path / "env-config.yml"
     p.write_text("fail_on: critical\n")
     other_root = tmp_path / "project"
@@ -79,7 +79,7 @@ def test_invalid_yaml_returns_empty(tmp_path: Path):
     p = tmp_path / "bad.yml"
     p.write_text("this is: : : not yaml ::: [\n")
     cfg = load_config(explicit_path=p)
-    # Не падаем; возвращаем пустой конфиг
+    # Should not crash; returns empty Config
     assert cfg.fail_on is None
 
 
@@ -108,7 +108,7 @@ def test_top_level_must_be_mapping(tmp_path: Path):
     p = tmp_path / "c.yml"
     p.write_text("- just\n- a list\n")
     cfg = load_config(explicit_path=p)
-    assert cfg.fail_on is None  # игнорируется
+    assert cfg.fail_on is None  # ignored
 
 
 # ---------------------------------------------------------------------------

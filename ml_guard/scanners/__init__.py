@@ -1,8 +1,8 @@
-"""Базовая абстракция Scanner и его реестр.
+"""Scanner base interface and its registry.
 
-Каждый сканер заявляет, какие файлы он умеет обрабатывать,
-и возвращает список Finding. Реестр выбирает подходящие сканеры
-для каждого файла на основе can_scan().
+Each scanner declares which files it can handle and returns a list of
+Findings. The registry picks the applicable scanners for a given file
+via can_scan().
 """
 from __future__ import annotations
 
@@ -17,25 +17,25 @@ log = logging.getLogger(__name__)
 
 
 class Scanner(ABC):
-    """Базовый интерфейс сканера."""
+    """Base interface for scanners."""
 
-    name: str = "base"               # уникальное имя сканера, попадает в Finding.scanner
+    name: str = "base"               # unique scanner name, lands in Finding.scanner
     description: str = ""
 
     @abstractmethod
     def can_scan(self, path: Path) -> bool:
-        """Применим ли этот сканер к данному файлу/директории?"""
+        """Does this scanner apply to this file / directory?"""
         raise NotImplementedError
 
     @abstractmethod
     def scan(self, path: Path) -> List[Finding]:
-        """Запустить сканирование. Должен ловить свои исключения и
-        возвращать их как Finding с severity=INFO/LOW (см. _wrap_error)."""
+        """Run the scan. Must catch its own exceptions and return them
+        as Finding(severity=INFO/LOW) (see _wrap_error)."""
         raise NotImplementedError
 
     # ------------------------------------------------------------------
     def _stamp(self, finding: Finding, path: Path, root: Path) -> Finding:
-        """Заполнить служебные поля (file, scanner) перед отдачей наружу."""
+        """Fill bookkeeping fields (file, scanner) before yielding outward."""
         try:
             finding.file = str(path.relative_to(root))
         except ValueError:
@@ -45,11 +45,11 @@ class Scanner(ABC):
 
 
 class ScannerRegistry:
-    """Реестр зарегистрированных сканеров.
+    """Registry of registered scanners.
 
-    Сканеры регистрируются глобально через @register декоратор или
-    явный вызов .register(). Раннер берёт реестр и для каждого файла
-    выбирает все .can_scan(path) == True сканеры.
+    Scanners register globally via the @register decorator or an explicit
+    .register() call. The runner takes the registry and, for each file,
+    picks every scanner where .can_scan(path) == True.
     """
 
     def __init__(self) -> None:
@@ -61,7 +61,7 @@ class ScannerRegistry:
         return scanner
 
     def unregister_all(self) -> None:
-        """Полезно в тестах."""
+        """Handy in tests."""
         self._scanners.clear()
 
     def applicable(self, path: Path) -> Iterable[Scanner]:
@@ -76,11 +76,11 @@ class ScannerRegistry:
         return list(self._scanners)
 
 
-# Глобальный реестр по умолчанию. CLI его использует.
+# Default global registry. The CLI uses this.
 default_registry = ScannerRegistry()
 
 
 def register(scanner_cls: Type[Scanner]) -> Type[Scanner]:
-    """Декоратор для класса сканера: создаёт экземпляр и регистрирует."""
+    """Class decorator: instantiate the scanner and register it."""
     default_registry.register(scanner_cls())
     return scanner_cls

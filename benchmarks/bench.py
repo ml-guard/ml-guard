@@ -1,17 +1,17 @@
-"""Микро-бенчмарки для сканеров ML Guard.
+"""Microbenchmarks for ML Guard scanners.
 
-Запуск:
+Run:
     PYTHONPATH=. python3 benchmarks/bench.py
 
-Что меряем:
-  • per-file throughput для каждого сканера на синтетических артефактах
-    разных размеров;
-  • full-runner с разным числом workers на смешанной директории;
-  • cold/warm: первый запуск vs повторный (там, где есть кэш или JIT-эффекты).
+What we measure:
+  • per-file throughput for each scanner on synthetic artifacts of
+    various sizes;
+  • full-runner with different worker counts on a mixed directory;
+  • cold/warm: first run vs repeat (where caches or JIT matter).
 
-Это НЕ pytest-benchmark и не правило для CI failure: на shared-ranner'е
-GitHub Actions цифры пляшут на 2-3x. Цель — детектировать регрессии
-выше 10x от запуска к запуску.
+This is NOT pytest-benchmark and not a CI failure gate: on shared GitHub
+Actions runners numbers jitter 2-3x. The goal is to catch regressions
+larger than 10x between runs.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Callable, List, Tuple
 
-# Чтобы запускать как `python3 benchmarks/bench.py` из корня проекта
+# So we can run `python3 benchmarks/bench.py` from the project root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ml_guard.runner import Runner
@@ -35,7 +35,7 @@ from ml_guard.scanners.secret_scanner import SecretScanner
 
 
 # ---------------------------------------------------------------------------
-# Хелперы для генерации синтетических артефактов
+# Helpers for synthesizing artifacts
 # ---------------------------------------------------------------------------
 
 class _Mal:
@@ -49,13 +49,13 @@ def make_pickle_evil(path: Path) -> None:
 
 
 def make_pickle_clean_large(path: Path, mb: int) -> None:
-    """Большой pickle с массивом байтов (типичный сценарий: torch tensor)."""
+    """Large pickle with a byte array (typical: torch tensor)."""
     payload = {"weights": b"\x00" * (mb * 1024 * 1024)}
     path.write_bytes(pickle.dumps(payload))
 
 
 def make_safetensors(path: Path, num_tensors: int = 100, tensor_bytes: int = 1024) -> None:
-    """Многотензорный safetensors."""
+    """Multi-tensor safetensors."""
     header = {}
     body = b""
     offset = 0
@@ -73,7 +73,7 @@ def make_safetensors(path: Path, num_tensors: int = 100, tensor_bytes: int = 102
 
 
 def make_onnx(path: Path, num_nodes: int = 100) -> None:
-    """Синтетический ONNX с N стандартных Conv-узлов."""
+    """Synthetic ONNX with N standard Conv nodes."""
 
     def varint(n: int) -> bytes:
         out = bytearray()
@@ -111,7 +111,7 @@ def make_env_with_secrets(path: Path) -> None:
 
 
 def make_python_with_string_blob(path: Path, lines: int = 1000) -> None:
-    """Большой .py файл — бенчим secret-scanner на длинном источнике."""
+    """Large .py source — benchmarks the secret scanner."""
     out = []
     for i in range(lines):
         out.append(f"x{i} = 'value_{i:05d}'  # comment {i}")
@@ -120,11 +120,11 @@ def make_python_with_string_blob(path: Path, lines: int = 1000) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Раннер бенчмарков
+# Benchmark runner
 # ---------------------------------------------------------------------------
 
 def time_it(fn: Callable[[], None], runs: int = 5) -> Tuple[float, float]:
-    """Возвращает (median_seconds, min_seconds)."""
+    """Return (median_seconds, min_seconds)."""
     times = []
     for _ in range(runs):
         t = time.perf_counter()
@@ -143,7 +143,7 @@ def fmt_throughput(seconds: float, bytes_: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Сами бенчмарки
+# Benchmarks
 # ---------------------------------------------------------------------------
 
 def bench_pickle() -> List[Tuple[str, float, float, str]]:
@@ -151,14 +151,14 @@ def bench_pickle() -> List[Tuple[str, float, float, str]]:
     s = PickleScanner()
 
     with tempfile.TemporaryDirectory() as td:
-        # 1. Маленький вредоносный (~30 bytes)
+        # 1. Small malicious pickle (~30 bytes)
         p_evil = Path(td) / "evil.pkl"
         make_pickle_evil(p_evil)
         size = p_evil.stat().st_size
         med, _ = time_it(lambda: s.scan(p_evil), runs=20)
         rows.append(("pickle/evil_30B", size, med, fmt_throughput(med, size)))
 
-        # 2. Большой чистый — 4 MB tensor-blob
+        # 2. Large clean pickle — 4 MB tensor blob
         p_big = Path(td) / "big.pkl"
         make_pickle_clean_large(p_big, mb=4)
         size = p_big.stat().st_size
@@ -233,7 +233,7 @@ def bench_runner_parallelism() -> List[Tuple[str, float, float, str]]:
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        # 50 разных файлов: 25 pickle + 15 safetensors + 5 onnx + 5 .env
+        # 50 mixed files: 25 pickle + 15 safetensors + 5 onnx + 5 .env
         for i in range(25):
             make_pickle_clean_large(root / f"m{i}.pkl", mb=1)
         for i in range(15):

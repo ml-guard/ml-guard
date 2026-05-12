@@ -1,4 +1,4 @@
-"""Полный test runner без pytest."""
+"""Full test runner without pytest."""
 import sys, os, traceback, tempfile, pickle, zipfile, json, time
 from pathlib import Path
 
@@ -375,7 +375,7 @@ def secret_tests():
     def detects_aws_access_key():
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "config.yml"
-            # 20-символьный AKIA-формат; не AWS doc example, не содержит EXAMPLE.
+            # 20-char AKIA format; not the AWS doc example, contains no EXAMPLE marker.
             p.write_text("aws_access_key_id: AKIAQ7BCDEFGHIJKLMNO\n")
             f = s.scan(p)
             assert _has(f, "secret-aws-access-key"), [x.to_dict() for x in f]
@@ -430,13 +430,13 @@ def secret_tests():
     def detects_high_entropy():
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "x.yml"
-            # Длинная случайная base64-like строка рядом с ключом 'secret'
+            # Long random base64-like string next to a 'secret' key
             p.write_text("api_secret: aB3xYz9KqL2mN8pR5tV7wX4cZ1bN6dM\n")
             f = s.scan(p)
             assert _has(f, "secret-high-entropy"), [x.to_dict() for x in f]
 
     def ignores_uuid():
-        """UUID — это идентификатор, а не секрет, даже если рядом 'secret'."""
+        """UUID is an identifier, not a secret, even when "secret" is nearby."""
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "x.yml"
             p.write_text("session_secret: 550e8400-e29b-41d4-a716-446655440000\n")
@@ -451,10 +451,10 @@ def secret_tests():
                 "AWS_ACCESS_KEY=AKIAEXAMPLEEXAMPLEEX\n"
             )
             f = s.scan(p)
-            # Real AKIA-паттерн пройдёт; placeholder с EXAMPLE тоже AKIA-формы → должен подсветиться,
-            # но мы фильтруем строку с EXAMPLE через _is_obviously_placeholder.
-            # Проверяем: не должно быть aws_secret_near_key (нет такого префикса)
-            # и для openai placeholder — мы должны его пропустить.
+            # A real AKIA pattern matches; an EXAMPLE placeholder is AKIA-shaped too
+            # → would match, but we filter EXAMPLE strings via _is_obviously_placeholder.
+            # We verify: no aws_secret_near_key (no such prefix here) and the openai
+            # placeholder must be suppressed.
             for x in f:
                 assert "your_secret_key_here" not in x.snippet
 
@@ -479,11 +479,11 @@ def secret_tests():
             p.write_text(json.dumps(nb))
             f = s.scan(p)
             assert _has(f, "secret-aws-access-key")
-            # location должен указать на cell
+            # location should reference the cell
             assert any("cell 0" in x.location for x in f)
 
     def secret_is_redacted():
-        """Полный секрет НЕ должен попадать в snippet."""
+        """The full secret must NOT leak into the snippet."""
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "x.env"
             secret = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
@@ -509,7 +509,7 @@ def secret_tests():
     def file_too_large():
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "huge.env"
-            # Ставим лимит ниже
+            # Set a lower limit
             old_limit = SecretScanner.MAX_FILE_BYTES
             try:
                 SecretScanner.MAX_FILE_BYTES = 100
@@ -526,8 +526,8 @@ def secret_tests():
                 ("config.yaml", True),
                 ("x.json", True),
                 ("Dockerfile", True),
-                ("model.pkl", False),     # бинарный — не наш
-                ("README.md", False),     # md не сканируем (выбор)
+                ("model.pkl", False),     # binary — not our format
+                ("README.md", False),     # md not scanned (by design)
                 ("notebook.ipynb", True),
             ]:
                 p = Path(td) / name
@@ -632,7 +632,7 @@ def onnx_tests():
     def _has(findings, rule):
         return any(f.rule_id == rule for f in findings)
 
-    # --- собственно тесты ---
+    # --- actual tests ---
 
     def can_scan_ext():
         with tempfile.TemporaryDirectory() as td:
@@ -655,7 +655,7 @@ def onnx_tests():
             assert _has(f, "onnx-malformed")
 
     def clean_standard_op():
-        """Стандартный домен + опсет 13 — должно быть чисто."""
+        """Standard domain + opset 13 — must be clean."""
         with tempfile.TemporaryDirectory() as td:
             opset = build_opset("", 13)
             node = build_node("Conv", domain="")
@@ -686,13 +686,13 @@ def onnx_tests():
             p = Path(td) / "ms.onnx"; p.write_bytes(data)
             f = s.scan(p)
             assert _has(f, "onnx-vendor-domain-op")
-            # Не должно быть HIGH на vendor-домене
+            # No HIGH on a vendor domain
             for x in f:
                 assert x.severity != Severity.HIGH or x.rule_id != "onnx-custom-domain-op"
 
     def old_opset_medium():
         with tempfile.TemporaryDirectory() as td:
-            opset = build_opset("", 5)  # старый ai.onnx
+            opset = build_opset("", 5)  # old ai.onnx
             data = build_model(opsets=[opset], graph=build_graph())
             p = Path(td) / "old.onnx"; p.write_bytes(data)
             f = s.scan(p)
@@ -773,7 +773,7 @@ def onnx_tests():
             assert _has(f, "onnx-external-url")
 
     def initializer_relative_clean():
-        """Относительный путь без `..` — это норма для split-моделей."""
+        """A relative path without `..` is normal for split-models."""
         with tempfile.TemporaryDirectory() as td:
             ini = build_initializer("w", external_loc="weights/w0.bin")
             graph = build_graph(initializers=[ini])
@@ -793,7 +793,7 @@ def onnx_tests():
             assert _has(f, "onnx-metadata-url")
 
     def deduplicated_custom_op_pair():
-        """Два узла с одинаковой парой (domain, op_type) → один finding."""
+        """Two nodes sharing (domain, op_type) → one finding."""
         with tempfile.TemporaryDirectory() as td:
             opset = build_opset("evil.exfil", 1)
             n1 = build_node("Bad", domain="evil.exfil")
@@ -845,21 +845,21 @@ def sbom_tests():
             )
             result = Runner().run(root)
             bom = build_sbom(result, root)
-            # CycloneDX обязательные поля
+            # CycloneDX required fields
             assert bom["bomFormat"] == "CycloneDX"
             assert bom["specVersion"] == "1.5"
             assert bom["serialNumber"].startswith("urn:uuid:")
             assert bom["metadata"]["tools"]["components"][0]["name"] == "ml-guard"
-            # Должен быть компонент model.pkl
+            # Expect a model.pkl component
             comp_names = [c["name"] for c in bom["components"]]
             assert "model.pkl" in comp_names
-            # Зависимости из requirements.txt
+            # Dependencies from requirements.txt
             assert "transformers" in comp_names
             assert "torch" in comp_names
-            # У model.pkl — sha256
+            # model.pkl carries sha256
             mp = next(c for c in bom["components"] if c["name"] == "model.pkl")
             assert any(h["alg"] == "SHA-256" for h in mp.get("hashes", []))
-            # Vulnerability присутствует, ratings заполнены
+            # Vulnerability is present, ratings populated
             assert bom["vulnerabilities"]
             v0 = bom["vulnerabilities"][0]
             assert v0["ratings"][0]["severity"] in ("critical", "high", "medium", "low", "info")
@@ -870,10 +870,10 @@ def sbom_tests():
             root = Path(td)
             evil_pkl(root / "model.pkl")
             result = Runner().run(root)
-            # При min_severity=critical — vuln есть (critical)
+            # min_severity=critical → vuln is present (critical)
             bom_c = build_sbom(result, root, min_severity=Severity.CRITICAL)
             assert bom_c["vulnerabilities"]
-            # При min_severity=info — все включены
+            # min_severity=info → everything is included
             bom_i = build_sbom(result, root, min_severity=Severity.INFO)
             assert len(bom_i["vulnerabilities"]) >= len(bom_c["vulnerabilities"])
 
@@ -894,15 +894,15 @@ def sbom_tests():
             assert bom["bomFormat"] == "CycloneDX"
             assert bom["components"] == []
             assert bom["vulnerabilities"] == []
-            # Должно быть валидным JSON
+            # Must be valid JSON
             json.loads(json.dumps(bom))
 
     def covers_safetensors_and_onnx():
-        """ML-артефакты должны попадать в BOM даже без findings."""
+        """ML artifacts must show up in the BOM even without findings."""
         import struct as _struct
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            # Чистый safetensors — без findings
+            # Clean safetensors — no findings
             head = json.dumps({
                 "w": {"dtype": "F32", "shape": [2, 3], "data_offsets": [0, 24]},
             }).encode()
@@ -917,7 +917,7 @@ def sbom_tests():
             assert ok["type"] == "machine-learning-model"
 
     def stable_sha256():
-        """Один и тот же файл — одинаковый SHA-256 в двух BOM'ах."""
+        """Same file → identical SHA-256 across two BOMs."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "x.pkl").write_bytes(b"\x80\x04N." + b"deterministic" * 100)
@@ -927,7 +927,7 @@ def sbom_tests():
             x1 = next(c for c in bom1["components"] if c["name"] == "x.pkl")
             x2 = next(c for c in bom2["components"] if c["name"] == "x.pkl")
             assert x1["hashes"] == x2["hashes"]
-            # Но serialNumber должен быть РАЗНЫМ — это новый BOM
+            # serialNumber must DIFFER — each BOM is a fresh document
             assert bom1["serialNumber"] != bom2["serialNumber"]
 
     def json_output_is_valid():
@@ -951,7 +951,7 @@ def sbom_tests():
             assert "ml-guard:rule_id" in prop_names
             assert "ml-guard:scanner" in prop_names
             assert "ml-guard:location" in prop_names
-            # bom-ref у vuln стабилен (через fingerprint)
+            # Vuln bom-ref is stable (via fingerprint)
             assert v["bom-ref"].startswith("finding:")
 
     t("sbom/basic_structure", basic_structure)
@@ -981,21 +981,21 @@ def compliance_tests():
         assert "soc2" in names
 
     def all_compliance_rule_ids_exist_in_scanners():
-        """КРИТИЧНЫЙ инвариант: каждый rule_id, упомянутый в compliance,
-        должен быть реально известен какому-то сканеру. Иначе 'control
-        passed' будет ложно-положительным (правила нет → finding'ов нет
-        → control автоматически PASS).
+        """CRITICAL invariant: every rule_id mentioned in compliance must
+        actually be known to some scanner. Otherwise "control passed"
+        becomes a false positive (no such rule → no findings → control
+        auto-PASS).
 
-        Извлекаем rule_ids из исходников сканеров двумя способами:
-          • rule_id="..." в kwarg/переменной (Finding/возврат)
-          • id="..." в _Rule dataclass (secret_scanner)
+        We extract rule_ids from scanner sources two ways:
+          • rule_id="..." in a kwarg / variable (Finding/return)
+          • id="..." in the _Rule dataclass (secret_scanner)
         """
         import re as _re
         from pathlib import Path as _Path
         scanners_dir = _Path(__file__).parent / "ml-guard" / "ml_guard" / "scanners"
         if not scanners_dir.is_dir():
-            # __file__ это run_tests.py в /home/claude
-            return  # пропускаем тихо если запускают не из этого окружения
+            # __file__ is run_tests.py in /home/claude
+            return  # silently skip outside the dev environment
 
         known = set()
         for fp in scanners_dir.rglob("*.py"):
@@ -1009,7 +1009,7 @@ def compliance_tests():
 
         assert len(known) >= 40, f"only {len(known)} rule_ids found — extraction broken?"
 
-        # Все стандарты
+        # All standards
         for sid in comp.list_standards():
             std = comp.get_standard(sid)
             for ctrl in std.controls:
@@ -1044,13 +1044,13 @@ def compliance_tests():
             report = comp.build_report(r, root, "eu-ai-act")
             assert not report.overall_pass
             assert report.failed >= 1
-            # AIACT-9 (Risk management) должен падать на pickle-dangerous-global
+            # AIACT-9 (Risk management) must fail on pickle-dangerous-global
             failing = [c for c in report.control_results if c.status == "FAIL"]
             failing_ids = {c.control.id for c in failing}
             assert "AIACT-9" in failing_ids
 
     def control_groups_findings_correctly():
-        """В FAIL должны попасть именно те findings, чьи rule_id в списке контрола."""
+        """FAIL must include exactly the findings whose rule_id is in the control list."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             evil_pkl(root / "x.pkl")
@@ -1074,7 +1074,7 @@ def compliance_tests():
             assert b"trailer" in pdf
 
     def pdf_grows_with_findings():
-        """Чем больше findings — тем больше PDF (sanity, не точная мера)."""
+        """More findings → larger PDF (sanity check, not an exact metric)."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             clean_pkl(root / "ok.pkl")
@@ -1088,15 +1088,15 @@ def compliance_tests():
             assert len(big) > len(small)
 
     def pdf_contains_metadata_strings():
-        """Ключевые поля просачиваются в текстовый слой PDF."""
+        """Key fields surface in the PDF text layer."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             evil_pkl(root / "x.pkl")
             r = Runner().run(root)
             report = comp.build_report(r, root, "eu-ai-act")
             pdf = comp.render_pdf(report)
-            # PDF — бинарный, но текст хранится в content streams под FlateDecode.
-            # Проверяем через прямую распаковку каждого stream.
+            # PDF is binary, but text lives in content streams under FlateDecode.
+            # We verify by directly decompressing each stream.
             import re, zlib as _z
             streams = re.findall(rb"stream\n(.+?)\nendstream", pdf, re.DOTALL)
             text = b""
@@ -1106,18 +1106,18 @@ def compliance_tests():
                 except Exception:
                     pass
             text_str = text.decode("latin-1", errors="replace")
-            # Должно содержать: standard, verdict-text, имя файла
+            # Should contain: standard, verdict text, file name
             assert "eu" in text_str.lower() or "EU AI Act" in text_str
             assert "FAILED" in text_str or "PASSED" in text_str
 
     def json_summary_structure():
-        """Проверяем что compliance вычисление подходит для JSON."""
+        """Verify compliance computation is JSON-compatible."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             evil_pkl(root / "x.pkl")
             r = Runner().run(root)
             report = comp.build_report(r, root, "nist-ai-rmf")
-            # Минимальный набор полей, на которые опирается CLI --json
+            # Minimum field set the CLI --json output relies on
             assert report.standard.id == "nist-ai-rmf"
             assert report.timestamp.endswith("Z")
             assert isinstance(report.passed, int)
@@ -1125,7 +1125,7 @@ def compliance_tests():
             assert report.total_controls > 0
 
     def empty_findings_yields_pass():
-        """ScanResult без findings → все controls PASS."""
+        """ScanResult with no findings → every control PASSes."""
         report = comp.build_report(ScanResult(), Path("/tmp"), "eu-ai-act")
         assert report.overall_pass
         for cr in report.control_results:
@@ -1133,7 +1133,7 @@ def compliance_tests():
             assert cr.matched_findings == []
 
     def iso_27001_malicious_pickle_fails_a8_7():
-        """Malicious pickle должен валить A.8.7 (Protection against malware)."""
+        """A malicious pickle must fail A.8.7 (Protection against malware)."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             evil_pkl(root / "x.pkl")
@@ -1142,14 +1142,14 @@ def compliance_tests():
             failing_ids = {c.control.id for c in report.control_results
                           if c.status == "FAIL"}
             assert "A.8.7" in failing_ids
-            # A.8.4 (source code access) не должен падать на pickle
-            # т.к. его rules — только secret-*
+            # A.8.4 (source code access) must NOT fail on pickle —
+            # its rules are secret-* only.
             passing_ids = {c.control.id for c in report.control_results
                           if c.status == "PASS"}
             assert "A.8.4" in passing_ids
 
     def iso_27001_secrets_fail_a8_4():
-        """Github PAT в .env должен валить A.8.4 (Access to source code)."""
+        """A GitHub PAT in .env must fail A.8.4 (Access to source code)."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / ".env").write_text(
@@ -1162,7 +1162,7 @@ def compliance_tests():
             assert "A.8.4" in failing_ids
 
     def soc2_cc6_1_fails_on_cloud_secret():
-        """AWS access key должен валить CC6.1 (Logical access security)."""
+        """An AWS access key must fail CC6.1 (Logical access security)."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "config.yml").write_text(
@@ -1175,7 +1175,7 @@ def compliance_tests():
             assert "CC6.1" in failing_ids
 
     def soc2_cc6_6_fails_on_pickle_rce():
-        """Pickle RCE должен валить CC6.6 (Protection from external threats)."""
+        """Pickle RCE must fail CC6.6 (Protection from external threats)."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             evil_pkl(root / "model.pkl")
@@ -1186,7 +1186,7 @@ def compliance_tests():
             assert "CC6.6" in failing_ids
 
     def soc2_clean_repo_passes():
-        """Чистый репо должен пройти все SOC 2 controls."""
+        """A clean repo must pass every SOC 2 control."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             clean_pkl(root / "ok.pkl")
@@ -1197,7 +1197,7 @@ def compliance_tests():
                                           if c.status == "FAIL"]
 
     def all_4_standards_renderable_to_pdf():
-        """PDF рендерится для каждого стандарта без падения."""
+        """PDF renders for every standard without crashing."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             evil_pkl(root / "x.pkl")
@@ -1207,8 +1207,8 @@ def compliance_tests():
                 pdf = comp.render_pdf(report)
                 assert pdf.startswith(b"%PDF-1.4"), f"{sid} PDF invalid"
                 assert pdf.rstrip().endswith(b"%%EOF")
-                # PDF не должен быть подозрительно мал для стандарта с
-                # 6+ контролами
+                # PDF must not be suspiciously small for a standard with
+                # 6+ controls
                 assert len(pdf) > 2000, f"{sid} PDF too small: {len(pdf)} bytes"
 
     t("compliance/list_standards", list_standards_works)
@@ -1252,7 +1252,7 @@ def pdf_tests():
         for i in range(200):
             doc.paragraph(f"This is paragraph number {i} of two hundred.", size=11)
         b = doc.to_bytes()
-        # Ищем количество /Type /Page (без /Pages)
+        # Count /Type /Page occurrences (not /Pages)
         import re
         page_count = len(re.findall(rb"/Type /Page[^s]", b))
         assert page_count >= 2
@@ -1261,14 +1261,14 @@ def pdf_tests():
         doc = PdfDocument()
         doc.paragraph("Has parens (xx) and slash \\xx")
         b = doc.to_bytes()
-        # Не должно быть ломки структуры
+        # No structural breakage
         assert b.startswith(b"%PDF-1.4")
 
     def fallback_for_unicode():
-        """Em-dash, bullet, smart quotes должны рендериться без падения."""
+        """Em-dash, bullet, smart quotes render without crashing."""
         doc = PdfDocument()
         doc.paragraph("Em dash and bullet star and arrows mapped to ascii")
-        # Передаём не-Latin1 через переменную, чтобы не путать литералы
+        # Pass non-Latin1 via a variable to avoid confusing literal scanners
         for ch in ["—", "•", "→", "≥", "…"]:
             doc.paragraph(f"unicode char: {ch}")
         b = doc.to_bytes()
@@ -1282,7 +1282,7 @@ def pdf_tests():
 
     def empty_doc_still_valid():
         b = PdfDocument().to_bytes()
-        # Хотя бы один пустой Page всё равно создаётся
+        # At least one empty Page is still created
         assert b.startswith(b"%PDF-1.4")
         assert b"/Type /Page" in b
 
@@ -1299,7 +1299,7 @@ section("PDF writer", pdf_tests)
 
 # ============ parallel runner ============
 def parallel_runner_tests():
-    """Параллельный режим должен давать тот же результат что последовательный."""
+    """Parallel mode must produce the same result as sequential."""
 
     def same_findings_regardless_of_workers():
         with tempfile.TemporaryDirectory() as td:
@@ -1313,7 +1313,7 @@ def parallel_runner_tests():
 
             assert r1.files_scanned == r4.files_scanned
             assert len(r1.findings) == len(r4.findings)
-            # Одинаковые fingerprint'ы (порядок может отличаться)
+            # Identical fingerprints (order may differ)
             fp1 = sorted(f.fingerprint for f in r1.findings)
             fp4 = sorted(f.fingerprint for f in r4.findings)
             assert fp1 == fp4
@@ -1322,7 +1322,7 @@ def parallel_runner_tests():
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             evil_pkl(root / "x.pkl")
-            r = Runner(workers=0).run(root)  # должно стать 1
+            r = Runner(workers=0).run(root)  # should normalize to 1
             assert r.has_at_least(Severity.CRITICAL)
 
     def workers_default_auto():
@@ -1330,7 +1330,7 @@ def parallel_runner_tests():
         assert r.workers >= 1
 
     def errors_propagated_from_workers():
-        """Если сканер падает в воркер-потоке, ошибка должна попасть в result.errors."""
+        """If a scanner crashes in a worker thread, the error goes into result.errors."""
         from ml_guard.scanners import Scanner, ScannerRegistry, register
 
         class _Crashy(Scanner):
@@ -1352,10 +1352,10 @@ def parallel_runner_tests():
             assert all("kaboom" in e for e in r.errors)
 
     def parallel_is_not_slower_for_io_bound():
-        """Smoke: 20 файлов с workers=4 не должен быть в 5 раз медленнее workers=1.
+        """Smoke: 20 files with workers=4 should not be 5x slower than workers=1.
 
-        Это не строгий бенчмарк (CI-машины шумные), а sanity: у нас не
-        наоборот — потоки не делают всё медленнее из-за оверхеда.
+        Not a strict benchmark (CI machines are noisy), just sanity: threads
+        should not make things slower due to overhead.
         """
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -1367,7 +1367,7 @@ def parallel_runner_tests():
             t2 = time.monotonic()
             Runner(workers=4).run(root)
             par = time.monotonic() - t2
-            # Очень мягкий sanity: parallel не должен быть в 3x медленнее
+            # Very loose sanity: parallel must not be 3x slower
             assert par < seq * 3 + 0.5, f"parallel slow: seq={seq:.3f} par={par:.3f}"
 
     t("parallel/same_findings", same_findings_regardless_of_workers)
@@ -1400,7 +1400,7 @@ def cve_tests():
         assert _normalize_pypi_name("Foo-Bar") == "foo-bar"
 
     def version_matches_basic():
-        # Внутри [introduced, fixed)
+        # Inside [introduced, fixed)
         r = [{"type": "ECOSYSTEM",
               "events": [{"introduced": "1.0"}, {"fixed": "2.0"}]}]
         assert _version_matches("1.5", r, [])
@@ -1410,13 +1410,13 @@ def cve_tests():
         assert not _version_matches("3.0", r, [])
 
     def version_matches_unbounded():
-        # introduced без fixed → все ≥ introduced
+        # introduced without fixed → everything >= introduced
         r = [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}]
         assert _version_matches("0.0.1", r, [])
         assert _version_matches("99.0.0", r, [])
 
     def version_matches_explicit():
-        # Без ranges, только versions
+        # No ranges, only explicit versions
         assert _version_matches("4.30.0", [], ["4.30.0", "4.31.0"])
         assert not _version_matches("4.30.1", [], ["4.30.0", "4.31.0"])
 
@@ -1427,11 +1427,11 @@ def cve_tests():
         ]}]
         assert _version_matches("4.2.20", r, [])
         assert _version_matches("5.2.5", r, [])
-        assert not _version_matches("5.0", r, [])     # между segments
-        assert not _version_matches("5.2.11", r, [])  # граница: точно fixed
+        assert not _version_matches("5.0", r, [])     # between segments
+        assert not _version_matches("5.2.11", r, [])  # boundary: exactly fixed
 
     def version_matches_pre_release():
-        # 5.2.0 ПОПАДАЕТ в [5.2a1, 5.2.11) потому что alpha < release
+        # 5.2.0 IS in [5.2a1, 5.2.11) because alpha < release
         r = [{"type": "ECOSYSTEM",
               "events": [{"introduced": "5.2a1"}, {"fixed": "5.2.11"}]}]
         assert _version_matches("5.2.0", r, [])
@@ -1439,7 +1439,7 @@ def cve_tests():
         assert not _version_matches("5.2.11", r, [])
 
     def version_matches_invalid_version_skipped():
-        # Версия пользователя не парсится → consery: False
+        # User version unparseable → conservative: False
         r = [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}]
         assert not _version_matches("not.a.version!@#", r, [])
 
@@ -1459,7 +1459,7 @@ def cve_tests():
         with tempfile.TemporaryDirectory() as td:
             adv_dir = Path(td) / "advs"
             adv_dir.mkdir()
-            # GHSA для transformers 4.0..5.0
+            # GHSA for transformers 4.0..5.0
             (adv_dir / "GHSA-test-001.json").write_text(json.dumps({
                 "schema_version": "1.7.3",
                 "id": "GHSA-test-001",
@@ -1509,14 +1509,14 @@ def cve_tests():
             assert stats["imported"] == 4
             assert stats["errors"] == 0
 
-            # Запросы
+            # Queries
             tr = db.find_advisories_for("transformers", "4.5.0")
             ids = [a.id for a in tr]
             assert "GHSA-test-001" in ids
             assert "GHSA-test-002" not in ids   # withdrawn
-            assert "GHSA-test-003" not in ids   # npm, не PyPI
+            assert "GHSA-test-003" not in ids   # npm, not PyPI
 
-            # Версия за пределами
+            # Version out of range
             tr_clean = db.find_advisories_for("transformers", "5.0.0")
             assert all(a.id != "GHSA-test-001" for a in tr_clean)
 
@@ -1551,7 +1551,7 @@ def cve_tests():
             db.close()
 
     def normalized_lookup():
-        """`Scikit_Learn==1.0` должно матчиться с `scikit-learn` в БД."""
+        """`Scikit_Learn==1.0` must match `scikit-learn` in the DB."""
         with tempfile.TemporaryDirectory() as td:
             adv_dir = Path(td) / "a"; adv_dir.mkdir()
             (adv_dir / "x.json").write_text(json.dumps({
@@ -1640,32 +1640,32 @@ def cve_tests():
         with tempfile.TemporaryDirectory() as td:
             (Path(td) / "requirements.txt").write_text("foo==1.0\n")
             scanner = CveScanner(db_path=Path(td) / "nonexistent.db")
-            # Подавляем bundled-fallback: в production его наличие — фича,
-            # но этот тест проверяет именно ситуацию «БД не нашлась».
+            # Suppress bundled fallback: in production its presence is a feature,
+            # but this test specifically checks the "DB not found" path.
             scanner._bundled_db_path = staticmethod(lambda: None)
             f = scanner.scan(Path(td) / "requirements.txt")
             assert any(x.rule_id == "cve-db-missing" for x in f)
             assert all(x.severity == Severity.INFO for x in f)
 
     def scanner_falls_back_to_bundled_db():
-        """Если user DB отсутствует, scanner должен использовать bundled."""
-        # Bundled DB существует только в полностью установленном пакете.
-        # В editable-режиме мы её сгенерировали через scripts/build_mini_osv.py,
-        # поэтому проверим её наличие и прогон.
+        """If user DB is absent, the scanner should use the bundled one."""
+        # The bundled DB only exists in a fully installed package.
+        # In editable mode we generated it via scripts/build_mini_osv.py,
+        # so we check for its presence and run against it.
         bundled = Path(__file__).parent / "ml-guard" / "ml_guard" / "data" / "osv-mini.sqlite"
-        # __file__ это run_tests.py в /home/claude
+        # __file__ is run_tests.py in /home/claude
         if not bundled.is_file():
-            return  # пропускаем тихо в окружениях где bundled ещё не собрана
+            return  # silently skip in environments without a built bundled DB
 
         with tempfile.TemporaryDirectory() as td:
             req = Path(td) / "requirements.txt"
-            # Известный malicious package — должен сработать через bundled
+            # Known malicious package — must fire via bundled DB
             req.write_text("transformers==4.30.0\n")
-            # ВАЖНО: db_path указан на несуществующий файл — должен сработать
-            # fallback на bundled.
+            # IMPORTANT: db_path points at a missing file — the bundled fallback
+            # must kick in.
             scanner = CveScanner(db_path=Path(td) / "no-such.db")
             findings = scanner.scan(req)
-            # transformers 4.30.0 есть в наших top-150, должен найтись хотя бы один
+            # transformers 4.30.0 is in our top-150; at least one match expected
             assert any(x.rule_id == "cve-known-vulnerability" for x in findings), \
                 "bundled DB should yield findings for transformers 4.30.0"
 
@@ -1724,7 +1724,7 @@ def cve_tests():
             assert "Remove" in mal[0].message
 
     def scanner_dedup_by_advisory():
-        """Дубль (name, version, advisory_id) — один finding."""
+        """Duplicate (name, version, advisory_id) → one finding."""
         with tempfile.TemporaryDirectory() as td:
             adv_dir = Path(td) / "advs"; adv_dir.mkdir()
             (adv_dir / "x.json").write_text(json.dumps({
@@ -1790,24 +1790,23 @@ def cve_tests():
 section("CVE checker", cve_tests)
 
 
-# ============ CVE на реальном OSV дампе ============
+# ============ CVE against a real OSV dump ============
 #
-# Этот блок включается только если найден ZIP/директория с OSV PyPI-данными
-# в /tmp/osv или /mnt/user-data/uploads/all.zip. Без этого пропускаем —
-# тесты не должны зависеть от локального состояния машины разработчика.
+# This block runs only if an OSV PyPI dump (ZIP/dir) is found at
+# /tmp/osv or /mnt/user-data/uploads/all.zip. Without one we skip —
+# tests must not depend on the developer machine's local state.
 #
-# Что мы проверяем:
-#   • импорт всего дампа без падения, в разумное время (< 30s);
-#   • реальные пакеты с известными CVE дают ожидаемые matches
-#     (transformers 4.30.0 → есть critical, requests 2.0 → много CVE);
-#   • малварные пакеты ловятся независимо от версии (ascii2text → MAL);
-#   • безопасные/несуществующие пакеты не дают false-positive;
-#   • БД-файл получается разумного размера (15-25 MB).
+# What we verify:
+#   • importing the whole dump succeeds in reasonable time (<30s);
+#   • real packages with known CVEs produce the expected matches
+#     (transformers 4.30.0 → critical present; requests 2.0 → many CVEs);
+#   • malicious packages match regardless of version (ascii2text → MAL);
+#   • safe/non-existent packages produce no false positives;
+#   • the DB file lands at a reasonable size (15-25 MB).
 def cve_real_dump_tests():
     from ml_guard.cve_db import CveDatabase
 
-    # Источник дампа: распакованная директория предпочтительнее (быстрее
-    # импортируется), иначе ZIP.
+    # Dump source: unpacked directory is preferred (faster import); otherwise ZIP.
     osv_dir = Path("/tmp/osv")
     osv_zip = Path("/mnt/user-data/uploads/all.zip")
 
@@ -1818,11 +1817,11 @@ def cve_real_dump_tests():
         source_kind = "zip"
         source_path = osv_zip
     else:
-        # Тестов в этой секции просто не будет — пропускаем тихо.
-        # Не печатаем skip-сообщения чтобы не шуметь.
+        # Tests in this section simply do not exist — silent skip.
+        # No skip messages to keep output clean.
         return
 
-    # Импорт делаем один раз для всех тестов секции (они read-only).
+    # Import once for the entire section (tests are read-only).
     db_path = Path(tempfile.mkdtemp()) / "real.sqlite"
     db = CveDatabase(db_path)
     if source_kind == "dir":
@@ -1831,32 +1830,32 @@ def cve_real_dump_tests():
         stats = db.import_zip(source_path)
 
     def import_succeeded():
-        # Импорт должен дать тысячи записей; точное число зависит от того,
-        # когда был скачан дамп, но значимо ненулевое.
+        # Import should yield thousands of records; the exact number depends
+        # on when the dump was pulled, but it must be meaningfully non-zero.
         assert stats["imported"] > 1000, f"only {stats['imported']} imported"
         assert stats.get("errors", 0) == 0, f"errors during import: {stats}"
 
     def db_size_reasonable():
-        # 19K записей в SQLite укладываются в 10-50 MB.
+        # 19K records in SQLite fit into 10-50 MB.
         size_mb = db_path.stat().st_size / 1024 / 1024
         assert 5 < size_mb < 100, f"unexpected DB size: {size_mb:.1f} MB"
 
     def known_vulnerable_package_matches():
-        # transformers <= 4.36 имеет известные deserialization CVE
+        # transformers <= 4.36 has known deserialization CVEs
         advs = db.find_advisories_for("transformers", "4.30.0")
         assert advs, "expected at least one advisory for transformers==4.30.0"
-        # И хотя бы одна из них — critical (RCE через unpickling).
-        # На уровне БД severity — строка ("critical"/"high"/...) или None;
-        # маппинг в Severity-enum делает CveScanner.
+        # At least one is critical (RCE via unpickling).
+        # At DB level, severity is a string ("critical"/"high"/...) or None;
+        # CveScanner does the mapping to the Severity enum.
         assert any((a.severity or "").lower() == "critical" for a in advs), \
             f"no critical advisory among {[a.id for a in advs]}"
 
     def fixed_version_no_match():
-        """Пакет, давно зафикшенный, не должен матчить старые CVE."""
-        # numpy 1.26.0 — current на момент сбора дампа, очень мало CVE
+        """A long-fixed package should not match old CVEs."""
+        # numpy 1.26.0 — current at dump time, very few CVEs
         advs = db.find_advisories_for("numpy", "1.26.0")
-        # Старые numpy CVE (типа GHSA-fpfv-jqm9-f5jm для 1.21) НЕ должны
-        # матчить новые версии.
+        # Old numpy CVEs (e.g. GHSA-fpfv-jqm9-f5jm for 1.21) must NOT
+        # match newer versions.
         old_cve_id = "GHSA-fpfv-jqm9-f5jm"
         if any(a.id == old_cve_id for a in advs):
             raise AssertionError(
@@ -1864,26 +1863,26 @@ def cve_real_dump_tests():
             )
 
     def malicious_package_matches_any_version():
-        """MAL-* срабатывает независимо от версии."""
+        """MAL-* fires regardless of version."""
         advs1 = db.find_advisories_for("ascii2text", "1.0")
         advs2 = db.find_advisories_for("ascii2text", "0.0.1")
         advs3 = db.find_advisories_for("ascii2text", "999.0")
         assert advs1 and advs2 and advs3, "MAL must match any version"
         for advs in (advs1, advs2, advs3):
             assert any(a.is_malicious for a in advs)
-            # Severity на самом dataclass — строка/None для MAL.
-            # CRITICAL её делает CveScanner._make_finding(), а не БД.
-            # Здесь проверяем только семантический флаг.
+            # Severity on the dataclass is a string/None for MAL.
+            # CveScanner._make_finding() upgrades it to CRITICAL, not the DB.
+            # Here we only check the semantic flag.
 
     def nonexistent_package_no_match():
-        """Несуществующий пакет — пустой список, без ошибок."""
+        """Nonexistent package → empty list, no errors."""
         advs = db.find_advisories_for(
             "definitely-does-not-exist-xyzzy-12345", "1.0"
         )
         assert advs == []
 
     def case_insensitive_package_lookup():
-        """PyPI-имена case-insensitive: Transformers == transformers."""
+        """PyPI names are case-insensitive: Transformers == transformers."""
         a1 = db.find_advisories_for("transformers", "4.30.0")
         a2 = db.find_advisories_for("Transformers", "4.30.0")
         a3 = db.find_advisories_for("TRANSFORMERS", "4.30.0")
@@ -1893,13 +1892,13 @@ def cve_real_dump_tests():
         assert ids1 == ids2
 
     def aliases_include_cve_ids():
-        """Хотя бы у некоторых GHSA должны быть привязаны CVE-* aliases."""
+        """At least some GHSA entries should carry CVE-* aliases."""
         advs = db.find_advisories_for("transformers", "4.30.0")
         cve_aliased = [a for a in advs if any(x.startswith("CVE-") for x in a.aliases)]
         assert cve_aliased, "expected some advisories to alias CVE numbers"
 
     def query_speed():
-        """1000 запросов должны укладываться в секунду."""
+        """1000 queries should fit into a second."""
         t = time.monotonic()
         for _ in range(1000):
             db.find_advisories_for("transformers", "4.30.0")
@@ -1907,7 +1906,7 @@ def cve_real_dump_tests():
         assert elapsed < 5.0, f"1000 queries took {elapsed:.2f}s — index slow?"
 
     def end_to_end_via_scanner():
-        """Полный flow: requirements.txt → CVE scanner → findings."""
+        """End-to-end: requirements.txt → CVE scanner → findings."""
         from ml_guard.scanners.cve_scanner import CveScanner
 
         with tempfile.TemporaryDirectory() as td:
@@ -1922,16 +1921,16 @@ def cve_real_dump_tests():
             scanner = CveScanner(db_path=db_path)
             findings = scanner.scan(req)
 
-            # transformers — есть CVE; ascii2text — malicious; numpy 1.26 — чисто
+            # transformers has CVEs; ascii2text is malicious; numpy 1.26 is clean
             rule_ids = {f.rule_id for f in findings}
             assert "cve-known-vulnerability" in rule_ids
             assert "cve-malicious-package" in rule_ids
 
-            # Severity должна быть CRITICAL хотя бы для одной находки
+            # At least one finding must be CRITICAL
             assert any(f.severity == Severity.CRITICAL for f in findings)
 
     def cve_alias_dedup():
-        """GHSA и PYSEC про одну CVE-2023-6730 не должны давать два finding'а."""
+        """GHSA and PYSEC for the same CVE-2023-6730 must yield one finding."""
         from ml_guard.scanners.cve_scanner import CveScanner
 
         with tempfile.TemporaryDirectory() as td:
@@ -1939,9 +1938,9 @@ def cve_real_dump_tests():
             req.write_text("transformers==4.30.0\n")
             findings = CveScanner(db_path=db_path).scan(req)
 
-            # Считаем уникальные CVE-номера в snippet'ах. Если дедуп работает,
-            # каждая CVE появится ровно в одном finding'е (или меньше — если
-            # advisory без CVE alias).
+            # Count unique CVE numbers in snippets. If dedup works, each CVE
+            # appears in exactly one finding (or fewer — when an advisory has no
+            # CVE alias).
             from collections import Counter
             cve_counts: Counter = Counter()
             for f in findings:
@@ -1950,7 +1949,7 @@ def cve_real_dump_tests():
                 import re as _re
                 for cve in _re.findall(r"CVE-\d{4}-\d+", f.message):
                     cve_counts[cve] += 1
-            # Каждая CVE — максимум один раз (после нашего дедупа)
+            # Each CVE appears at most once (after our dedup)
             duplicates = {cve: n for cve, n in cve_counts.items() if n > 1}
             assert not duplicates, f"CVE duplicates not deduped: {duplicates}"
 
@@ -2037,7 +2036,7 @@ def config_tests():
             p = Path(td) / "bad.yml"
             p.write_text("- a\n  - b: : :")
             cfg = load_config(explicit_path=p)
-            # Допускается None ИЛИ пустой; главное — не падение.
+            # None OR empty is acceptable; the main thing is no crash.
             assert cfg.fail_on is None
 
     def rules_section():

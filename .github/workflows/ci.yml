@@ -26,14 +26,14 @@ jobs:
         run: ml-guard scan ./tests --fail-on critical || true
 
   scan-on-pr:
-    # Self-scan: каждый PR ml-guard сканирует свой же исходный код,
-    # чтобы доказать что в core-репо нет утечек секретов / уязвимых
-    # зависимостей / malicious pickles. fixtures и tests исключены через
-    # .ml-guard.yml в корне репо.
+    # Self-scan: every PR has ml-guard scan its own source to prove the
+    # core repo carries no leaked secrets, vulnerable dependencies, or
+    # malicious pickles. Fixtures and tests are excluded via .ml-guard.yml
+    # in the repo root.
     #
-    # Это также служит как demo workflow для пользователей — рекомендуемый
-    # способ интеграции в стороннем репо: см. ml-guard/scan-action на
-    # GitHub Marketplace (или просто `uses: ml-guard/scan-action@v1`).
+    # This doubles as a demo workflow for users — the recommended way to
+    # integrate into a third-party repo is `uses: ml-guard/scan-action@v1`
+    # from the GitHub Marketplace.
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
@@ -67,12 +67,13 @@ jobs:
         run: cargo test --release
 
   lint:
-    # Advisory-only: ruff/mypy выводят отчёт но не валят CI. Текущий код
-    # имеет style debt (310 ruff issues по большей части unused imports +
-    # неупорядоченные блоки). Это **не функциональные** проблемы — все
-    # 55 pytest тестов и весь pipeline работают. Style debt погашается
-    # отдельными PR; пока — оставляем job как indicator, не как gate.
-    # См. issue: https://github.com/ml-guard/ml-guard/issues/1
+    # Advisory-only: ruff/mypy print their reports but don't fail CI.
+    # The current code has style debt (~310 ruff issues, mostly unused
+    # imports and unsorted import blocks). These are **not** functional
+    # problems — all 55 pytest tests and the full pipeline pass. Style
+    # debt is paid down in separate PRs; for now we keep this job as
+    # an indicator, not a gate.
+    # See issue: https://github.com/ml-guard/ml-guard/issues/1
     name: ruff + mypy (advisory)
     runs-on: ubuntu-latest
     continue-on-error: true

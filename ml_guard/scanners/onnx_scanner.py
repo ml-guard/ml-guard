@@ -1,38 +1,36 @@
-"""ONNX scanner — статический анализ моделей в формате ONNX.
+"""ONNX scanner — static analysis of ONNX-format models.
 
-ONNX — это сериализованный protobuf (`onnx.ModelProto`). Мы НЕ используем
-библиотеку `onnx` — это даёт независимость от её парсера и нулевые
-дополнительные зависимости. Вместо этого читаем wire-format напрямую через
+ONNX is a serialized protobuf (`onnx.ModelProto`). We deliberately do NOT
+import the `onnx` library: that keeps us independent of its parser and
+adds zero external dependencies. Instead we read the wire format directly via
 `ml_guard._protobuf`.
 
-Что мы ловим:
+What we catch:
 
-  1. **Custom-domain operators**. Стандартные ONNX-операторы живут в домене
-     "" (пустой) или "ai.onnx*". Всё прочее (`com.microsoft`, `nvidia.*`,
-     произвольное `evil.exfil`) — это плагины, которые runtime может
-     загружать как нативный код. Это полностью законное поведение, но
-     для аудита — high-severity флаг: операторы из неизвестных доменов
-     не должны попадать в production без явного approve.
+  1. **Custom-domain operators**. Standard ONNX operators live in domain
+     "" (empty) or "ai.onnx*". Anything else (`com.microsoft`, `nvidia.*`,
+     arbitrary `evil.exfil`) is a plugin that the runtime can load as
+     native code. This is fully legitimate behavior, but for audit it's
+     a high-severity flag: operators from unknown domains shouldn't
+     reach production without explicit approval.
 
-  2. **Внешние данные (`external_data`)**. ONNX позволяет хранить тензоры
-     отдельно — в файле, на диске или (что страшно) по абсолютному пути.
-     Если путь содержит `..`, абсолютные `/etc/`, или URL — это вектор
-     для path-traversal или SSRF.
+  2. **External data (`external_data`)**. ONNX allows storing tensors
+     separately — in a file, on disk, or (scarier) at an absolute path.
+     If the path contains `..`, absolute `/etc/`, or a URL, it's a
+     path-traversal / SSRF vector.
 
-  3. **Слишком старый opset_import**. opset < 7 относится к ранним версиям
-     с известными несовместимостями и эксплоит-сурфейсом в старых
-     парсерах.
+  3. **Too-old opset_import**. opset < 7 belongs to early versions with
+     known incompatibilities and exploit surface in old parsers.
 
-  4. **Подозрительные строковые атрибуты**. Атрибуты с типом STRING,
-     содержащие команды ОС, шеллы, абсолютные пути — это маркер
-     прокинутого payload'а через граф (`Eval`-подобные кастомные узлы).
+  4. **Suspicious string attributes**. STRING-typed attributes containing
+     OS commands, shells, or absolute paths suggest a payload smuggled
+     through the graph (`Eval`-like custom nodes).
 
-  5. **Глубоко вложенные подграфы / огромное число узлов** — DoS-вектор;
-     ставим лимиты.
+  5. **Deeply nested subgraphs / huge node count** — DoS vector; we cap it.
 
-  6. **Битый/малформированный proto** — отдельный finding (как и для pickle).
+  6. **Corrupt/malformed proto** — emits its own finding (same as pickle).
 
-Этот сканер работает на чистом Python без зависимостей, кроме нашего
+This scanner is pure Python with no dependencies beyond our own
 `_protobuf.py`.
 """
 from __future__ import annotations
@@ -48,7 +46,7 @@ from ml_guard.scanners import Scanner, register
 
 
 # ---------------------------------------------------------------------------
-# ONNX schema constants (численные ID полей proto)
+# ONNX schema constants (numeric proto field IDs)
 # ---------------------------------------------------------------------------
 # ModelProto
 _MODEL_IR_VERSION = 1
@@ -97,10 +95,10 @@ _DATA_LOCATION_EXTERNAL = 1
 
 
 # ---------------------------------------------------------------------------
-# Известные стандартные домены ONNX
+# Known standard ONNX domains
 # ---------------------------------------------------------------------------
 
-# Пустой домен и официальные ai.onnx-домены — это canonical operators.
+# Empty domain and official ai.onnx domains hold canonical operators.
 _STANDARD_DOMAINS: Set[str] = {
     "",
     "ai.onnx",
@@ -109,9 +107,9 @@ _STANDARD_DOMAINS: Set[str] = {
     "ai.onnx.preview.training",
 }
 
-# Известные «полу-доверенные» домены, идущие от мейнстрим runtimes.
-# Не critical, но достойны medium-флага: пользователь должен знать, что
-# модель будет работать только при наличии соответствующего runtime.
+# Known "semi-trusted" domains from mainstream runtimes.
+# Not critical, but worth a medium flag: the user should know the model
+# will only run with the matching runtime installed.
 _KNOWN_VENDOR_DOMAINS: Set[str] = {
     "com.microsoft",
     "com.microsoft.experimental",
@@ -122,17 +120,17 @@ _KNOWN_VENDOR_DOMAINS: Set[str] = {
     "ai.onnx.contrib",
 }
 
-# Минимальный поддерживаемый ir_version. ONNX 1.0 = 3, ONNX 1.4+ = 4-5+.
-# Ниже 3 = очень старые модели.
+# Minimum supported ir_version. ONNX 1.0 = 3, ONNX 1.4+ = 4-5+.
+# Below 3 = very old models.
 _MIN_IR_VERSION = 3
-_MIN_OPSET_VERSION = 7   # ai.onnx ниже 7 — реально древние
+_MIN_OPSET_VERSION = 7   # ai.onnx below 7 is genuinely ancient
 
 
 # ---------------------------------------------------------------------------
-# Sniffers для строковых атрибутов
+# Sniffers for string attributes
 # ---------------------------------------------------------------------------
 
-# Команды ОС / шеллы / пути — то же, что в secret scanner, но строже.
+# OS commands / shells / paths — same idea as secret scanner, but stricter.
 _SHELL_PATTERNS = (
     re.compile(rb"(?i)\b(?:bash|sh|cmd|powershell|wget|curl|nc|netcat)\b"),
     re.compile(rb"(?:^|[\s;&|`])(?:rm|chmod|chown|sudo|kill|eval|exec)\s"),
@@ -149,22 +147,22 @@ _WIN_PATH_PATTERN = re.compile(
 _URL_PATTERN = re.compile(rb"(?:https?|ftp|file)://[A-Za-z0-9.\-/_:?=&%~+#]+")
 _PATH_TRAVERSAL = re.compile(rb"\.\./")
 
-# Минимальная длина для энтропийного теста / подозрительной строки.
+# Minimum length for the entropy test / suspicious-string check.
 _STR_INTEREST_MIN = 8
 
 
 # ---------------------------------------------------------------------------
-# Лимиты — DoS защита
+# Limits — DoS protection
 # ---------------------------------------------------------------------------
 
-# Максимальное число узлов в графе (включая subgraphs). Реальные модели
-# редко имеют > 100k операторов; миллион — почти всегда атака или ошибка.
+# Maximum nodes in the graph (including subgraphs). Real models rarely
+# exceed 100k operators; a million is almost always an attack or a bug.
 MAX_GRAPH_NODES = 1_000_000
 MAX_FILE_BYTES = 16 * 1024 * 1024 * 1024  # 16 GiB
 
 
 # ---------------------------------------------------------------------------
-# Парсинг с агрегацией находок
+# Parsing with finding aggregation
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -231,15 +229,15 @@ def _read_kv_entries(blobs: List[bytes]) -> List[tuple[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# Анализ нодов / графа
+# Node / graph analysis
 # ---------------------------------------------------------------------------
 
 def _analyze_attribute(attr_msg: Dict[int, List], state: _ScanState, node_label: str) -> None:
-    """Проверяем один AttributeProto."""
+    """Check a single AttributeProto."""
     name = _read_string_field(attr_msg, _ATTR_NAME) or "<anonymous>"
     attr_type = _read_int_field(attr_msg, _ATTR_TYPE)
 
-    # Тип STRING или массив STRINGS — содержимое стоит проверить
+    # STRING or STRINGS type — worth inspecting the payload
     if attr_type == _ATTR_TYPE_STRING or _ATTR_S in attr_msg:
         for blob in attr_msg.get(_ATTR_S, []):
             if isinstance(blob, bytes):
@@ -249,7 +247,7 @@ def _analyze_attribute(attr_msg: Dict[int, List], state: _ScanState, node_label:
             if isinstance(blob, bytes):
                 _analyze_string_attribute(blob, state, node_label, name)
 
-    # Subgraph (например, в If/Loop/Scan) — рекурсия
+    # Subgraph (e.g. inside If/Loop/Scan) — recurse
     for g_blob in attr_msg.get(_ATTR_G, []):
         if isinstance(g_blob, bytes):
             sub = pb.try_parse_nested(g_blob)
@@ -268,7 +266,7 @@ def _analyze_string_attribute(
     node_label: str,
     attr_name: str,
 ) -> None:
-    """Эвристики поверх string-атрибута."""
+    """Heuristics over a string attribute."""
     if len(blob) < _STR_INTEREST_MIN:
         return
 
@@ -332,7 +330,7 @@ def _analyze_node(node_msg: Dict[int, List], state: _ScanState, label_prefix: st
 
     node_label = f"{label_prefix}.{op_type}" if label_prefix else f"node[{state.nodes_seen-1}]:{op_type}"
 
-    # Операторы из кастомных доменов
+    # Operators from custom domains
     if domain not in _STANDARD_DOMAINS:
         pair = (domain, op_type)
         if pair not in state.custom_op_pairs:
@@ -360,7 +358,7 @@ def _analyze_node(node_msg: Dict[int, List], state: _ScanState, label_prefix: st
                     snippet=f"{domain}::{op_type}",
                 )
 
-    # Атрибуты узла
+    # Node attributes
     for attr_blob in node_msg.get(_NODE_ATTRIBUTE, []):
         if not isinstance(attr_blob, bytes):
             continue
@@ -373,7 +371,7 @@ def _analyze_node(node_msg: Dict[int, List], state: _ScanState, label_prefix: st
 
 
 def _analyze_initializer(tensor_msg: Dict[int, List], state: _ScanState) -> None:
-    """Ищем external_data со ссылками на странные пути."""
+    """Look for external_data referencing odd paths."""
     name = _read_string_field(tensor_msg, _TENSOR_NAME) or "<unnamed>"
     data_location = _read_int_field(tensor_msg, _TENSOR_DATA_LOCATION)
 
@@ -385,8 +383,8 @@ def _analyze_initializer(tensor_msg: Dict[int, List], state: _ScanState) -> None
     for k, v in entries:
         if k != "location":
             continue
-        # location — это путь к файлу-данным. В безопасной модели это
-        # относительный путь без `..`. Всё иное — высокий риск.
+        # location is the path to the data file. In a safe model this is
+        # a relative path without `..`. Anything else is high risk.
         if v.startswith("/") or (len(v) > 1 and v[1] == ":"):
             state.add(
                 rule_id="onnx-external-absolute-path",
@@ -452,9 +450,9 @@ def _analyze_opset_imports(model_msg: Dict[int, List], state: _ScanState) -> Non
                     location="opset_import",
                 )
         else:
-            # Неизвестный домен в opset_import = все его операторы будут
-            # считаться custom; узел-уровень тоже это поймает, но фиксируем
-            # отдельно — это явный «декларативный» сигнал.
+            # Unknown domain in opset_import = all its operators will be
+            # treated as custom; the node-level check would catch this too,
+            # but we record it separately — it's an explicit declarative signal.
             sev = Severity.MEDIUM if domain in _KNOWN_VENDOR_DOMAINS else Severity.HIGH
             state.add(
                 rule_id="onnx-non-standard-opset-domain",
@@ -466,7 +464,7 @@ def _analyze_opset_imports(model_msg: Dict[int, List], state: _ScanState) -> Non
 
 
 # ---------------------------------------------------------------------------
-# Сам сканер
+# The scanner itself
 # ---------------------------------------------------------------------------
 
 @register
@@ -476,8 +474,8 @@ class OnnxScanner(Scanner):
 
     _EXTENSIONS = {".onnx"}
 
-    # ONNX-magic: первый proto-tag для ModelProto.ir_version (field 1, varint) = 0x08.
-    # Не самая надёжная сигнатура, поэтому полагаемся в первую очередь на расширение.
+    # ONNX magic: the first proto tag for ModelProto.ir_version (field 1, varint) = 0x08.
+    # Not the most reliable signature, so we mostly rely on the file extension.
     _ONNX_FIRST_BYTES = b"\x08"
 
     def can_scan(self, path: Path) -> bool:
@@ -548,7 +546,7 @@ class OnnxScanner(Scanner):
                 continue
             _analyze_graph(graph_msg, state)
 
-        # metadata_props — могут содержать те же подозрительные строки
+        # metadata_props can carry the same suspicious strings
         meta_entries = _read_kv_entries([
             b for b in model_msg.get(_MODEL_METADATA_PROPS, []) if isinstance(b, bytes)
         ])

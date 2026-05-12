@@ -133,8 +133,8 @@ def main() -> int:
     else:
         entries = iter_zip_entries(args.source)
 
-    # Записываем отфильтрованные JSON во временную директорию,
-    # затем строим БД через стандартный импортёр.
+    # Write filtered JSON into a temp directory, then build the DB
+    # via the standard importer.
     import tempfile
 
     with tempfile.TemporaryDirectory() as td:
@@ -150,7 +150,7 @@ def main() -> int:
                   file=sys.stderr)
             return 1
 
-        # Импортируем отфильтрованный набор стандартным CveDatabase
+        # Import the filtered set via the standard CveDatabase
         args.output.parent.mkdir(parents=True, exist_ok=True)
         if args.output.exists():
             args.output.unlink()
@@ -162,8 +162,8 @@ def main() -> int:
     elapsed = time.monotonic() - started
     size_kb = args.output.stat().st_size / 1024
 
-    # Сжимаем bundled-DB: убираем references_json (не используется при
-    # матчинге, занимает ~80% места) и вакуумируем.
+    # Shrink bundled-DB: drop references_json (unused during matching,
+    # takes ~80% of space) and VACUUM.
     print(f"Pre-shrink size: {size_kb:.0f} KB; shrinking ...")
     import sqlite3 as _sql
     conn = _sql.connect(args.output)

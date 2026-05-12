@@ -1,7 +1,7 @@
-"""SARIF 2.1.0 форматтер — стандарт для GitHub Code Scanning, GitLab SAST и др.
+"""SARIF 2.1.0 formatter — standard for GitHub Code Scanning, GitLab SAST, etc.
 
-Спецификация: https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
-GitHub поддерживает подмножество — мы реализуем достаточный минимум.
+Spec: https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
+GitHub supports a subset — we implement the sufficient minimum.
 """
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ if TYPE_CHECKING:
     from ml_guard.runner import ScanResult
 
 
-# Маппинг наших severity → SARIF level
-# SARIF знает только 4: none/note/warning/error.
+# Map our severity → SARIF level
+# SARIF only has 4 levels: none/note/warning/error.
 _SARIF_LEVEL = {
     Severity.CRITICAL: "error",
     Severity.HIGH:     "error",
@@ -24,7 +24,7 @@ _SARIF_LEVEL = {
     Severity.INFO:     "note",
 }
 
-# Доп. поле security-severity (GitHub использует его для CVSS-like ранжирования).
+# Additional security-severity field (GitHub uses it for CVSS-like ranking).
 _SARIF_SECURITY_SCORE = {
     Severity.CRITICAL: "9.5",
     Severity.HIGH:     "8.0",
@@ -35,7 +35,7 @@ _SARIF_SECURITY_SCORE = {
 
 
 def _build_rules(findings: List[Finding]) -> List[Dict[str, Any]]:
-    """Уникальные правила (по rule_id) для секции tool.driver.rules."""
+    """Unique rules (by rule_id) for the tool.driver.rules section."""
     rules: Dict[str, Dict[str, Any]] = {}
     for f in findings:
         if f.rule_id in rules:
@@ -64,7 +64,7 @@ def _build_results(findings: List[Finding]) -> List[Dict[str, Any]]:
                 "artifactLocation": {"uri": f.file},
             }
         }
-        # Если location выглядит как "line N", достаём номер строки.
+        # If location looks like "line N", extract the line number.
         if f.location and f.location.startswith("line "):
             try:
                 line_no = int(f.location.split()[1])
@@ -91,7 +91,7 @@ def _build_results(findings: List[Finding]) -> List[Dict[str, Any]]:
 
 
 def format_sarif(result: "ScanResult") -> str:
-    """Возвращает SARIF JSON как строку."""
+    """Return SARIF JSON as a string."""
     sarif = {
         "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
         "version": "2.1.0",

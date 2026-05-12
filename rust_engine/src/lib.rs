@@ -1,29 +1,29 @@
 //! ML Guard native engine (Rust + PyO3).
 //!
-//! Этот крейт компилируется в Python-расширение `ml_guard_engine`.
-//! Python-сторона (`ml_guard.scanners.pickle_scanner`) пытается импортировать
-//! его и использует, если он доступен; иначе — fallback на чистый Python
-//! (`pickletools.genops`). Корректность одинаковая, разница только в скорости
-//! на больших файлах.
+//! This crate compiles to the Python extension `ml_guard_engine`.
+//! The Python side (`ml_guard.scanners.pickle_scanner`) attempts to import
+//! it and uses it when available; otherwise it falls back to pure Python
+//! (`pickletools.genops`). Correctness is identical — only speed differs
+//! on large files.
 //!
-//! Сборка локально:
+//! Local build:
 //!     pip install maturin
 //!     cd rust_engine && maturin develop --release
 //!
-//! Сборка распространяемых wheels:
+//! Building distributable wheels:
 //!     maturin build --release --strip
 //!
-//! ВАЖНО: набор обнаруживаемых RCE-callables, severity и rule_id ДОЛЖНЫ
-//! совпадать с `ml_guard/scanners/pickle_scanner.py`. Если меняешь там —
-//! меняй и здесь, иначе результат сканера будет зависеть от того, есть ли
-//! у пользователя нативный модуль. Лучшее решение в долгую — вынести список
-//! правил в общий JSON и читать его с обеих сторон; это TODO.
+//! IMPORTANT: the set of detected RCE callables, severities, and rule_ids MUST
+//! match `ml_guard/scanners/pickle_scanner.py`. If you change it there,
+//! change it here too — otherwise scanner output depends on whether the
+//! user has the native module. The long-term fix is to extract the rule list
+//! into a shared JSON and read it from both sides; that's a TODO.
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use std::collections::HashSet;
 
-// ---------- Базы знаний (повторяют Python) ----------
+// ---------- Knowledge base (mirrors Python) ----------
 
 const RCE_CALLABLES: &[(&str, &str)] = &[
     ("os", "system"), ("os", "popen"),
@@ -58,7 +58,7 @@ const BENIGN_TOP_MODULES: &[&str] = &[
     "torch", "numpy", "collections", "_codecs",
 ];
 
-// ---------- Парсер pickle ----------
+// ---------- Pickle parser ----------
 
 #[derive(Debug, Clone)]
 struct RawFinding {
@@ -148,7 +148,7 @@ fn analyze_pickle(data: &[u8]) -> Vec<RawFinding> {
             0x80 => { let _ = cur.read_byte(); }           // PROTO
             0x95 => { let _ = cur.read_n(8); }             // FRAME
 
-            // структурные / численные — кладём Other и съедаем payload
+            // structural / numeric — push Other and consume the payload
             b'(' | b'N' | 0x88 | 0x89
             | b'}' | b']' | 0x8f | b')'
             | 0x85 | 0x86 | 0x87 | b't'
@@ -169,7 +169,7 @@ fn analyze_pickle(data: &[u8]) -> Vec<RawFinding> {
                 let _ = cur.read_n(n); stack.push(StackVal::Other);
             }
 
-            // строки и байтовые блоки
+            // strings and byte blocks
             0x8c /* SHORT_BINUNICODE */ => {
                 let n = cur.read_u8().unwrap_or(0);
                 let bytes = cur.read_n(n).unwrap_or(&[]);
@@ -219,7 +219,7 @@ fn analyze_pickle(data: &[u8]) -> Vec<RawFinding> {
                 on_global(&module, &qualname, op_pos, &mut findings, &mut reported);
                 stack.push(StackVal::Other);
             }
-            // STACK_GLOBAL — две верхушки стека
+            // STACK_GLOBAL — top two stack entries
             0x93 => {
                 if stack.len() >= 2 {
                     let qualname = stack.pop().unwrap();
@@ -252,7 +252,7 @@ fn analyze_pickle(data: &[u8]) -> Vec<RawFinding> {
             b'0' => { stack.pop(); }
             b'1' => {}
 
-            // INST/OBJ — устаревшие
+            // INST/OBJ — deprecated
             b'i' => {
                 let _ = cur.read_line();
                 let _ = cur.read_line();
@@ -276,13 +276,13 @@ fn analyze_pickle(data: &[u8]) -> Vec<RawFinding> {
                 stack.push(StackVal::Other);
             }
 
-            // PUT/GET и memo — payload, стек не меняется
+            // PUT/GET and memo — payload only, stack unchanged
             b'p' | b'g' => { let _ = cur.read_line(); }
             b'q' | b'h' => { let _ = cur.read_byte(); }
             b'r' | b'j' => { let _ = cur.read_n(4); }
             0x94 /* MEMOIZE */ => {}
 
-            // BUILD/APPEND/APPENDS/SETITEM/SETITEMS — stack-stable для нашего трекинга
+            // BUILD/APPEND/APPENDS/SETITEM/SETITEMS — stack-stable for our tracking
             b'b' | b'a' | b'e' | b's' | b'u' => {}
 
             _ => {}
@@ -339,9 +339,9 @@ fn on_global(
     }
 }
 
-// ---------- PyO3 интерфейс ----------
+// ---------- PyO3 interface ----------
 
-/// Сканирует байты pickle-потока и возвращает list[dict] findings.
+/// Scan pickle stream bytes and return list[dict] findings.
 #[pyfunction]
 fn scan_pickle_bytes<'py>(py: Python<'py>, data: &[u8]) -> PyResult<&'py PyList> {
     let raw = analyze_pickle(data);
@@ -358,7 +358,7 @@ fn scan_pickle_bytes<'py>(py: Python<'py>, data: &[u8]) -> PyResult<&'py PyList>
     Ok(out)
 }
 
-/// Версия движка.
+/// Engine version.
 #[pyfunction]
 fn engine_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -371,7 +371,7 @@ fn ml_guard_engine(_py: Python, m: &PyModule) -> PyResult<()> {
     Ok(())
 }
 
-// ---------- Юнит-тесты Rust ----------
+// ---------- Rust unit tests ----------
 
 #[cfg(test)]
 mod tests {

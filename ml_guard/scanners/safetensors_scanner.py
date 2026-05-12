@@ -1,36 +1,37 @@
-"""Safetensors scanner — статический анализ формата safetensors.
+"""Safetensors scanner — static analysis of the safetensors format.
 
-Формат (стабилизирован Hugging Face, https://github.com/huggingface/safetensors):
+Format (stabilized by Hugging Face, https://github.com/huggingface/safetensors):
 
     [ 8 bytes:  header_size  (u64 little-endian) ]
     [ header_size bytes:  JSON header ]
     [ rest:  raw tensor data ]
 
-JSON-заголовок:
+JSON header shape:
     {
       "tensor_name": {
         "dtype": "F32",
         "shape": [1024, 768],
-        "data_offsets": [start, end]      # относительно начала data-секции
+        "data_offsets": [start, end]      # relative to the data section start
       },
       ...
-      "__metadata__": { "format": "pt", ... }    # необязательно
+      "__metadata__": { "format": "pt", ... }    # optional
     }
 
-Safetensors *по дизайну* безопаснее pickle: нет исполняемого кода. Но мы всё
-равно ищем способы протащить вредоносное содержимое:
+Safetensors is *by design* safer than pickle: no executable code. But we
+still look for ways malicious content can ride along:
 
-1. **Trailing data** после конца последнего тензора — там не должно быть ничего;
-   наличие исполняемых сигнатур (ELF, MZ, shellcode) — серьёзный red flag.
-2. **Лживые offset'ы** — указывают за пределы data-секции или пересекаются
-   между тензорами. Загрузчики на C++ исторически имели CVE на этом векторе.
-3. **Несуществующие dtype'ы** — попытка "обмануть" парсер.
-4. **Подозрительные строки в __metadata__** — URL/IP/пути → возможный
-   exfiltration-канал.
-5. **Аномально большой заголовок** (> 100 MB) — DoS или эксплойт.
-6. **Заголовок не валидный JSON** — повреждён или специально малформирован.
+1. **Trailing data** past the last tensor — nothing should live there;
+   any executable signatures (ELF, MZ, shellcode) is a serious red flag.
+2. **Lying offsets** — point past the data section, or overlap between
+   tensors. C++ loaders have historically had CVEs on this vector.
+3. **Unknown dtypes** — an attempt to confuse the parser.
+4. **Suspicious strings in __metadata__** — URLs/IPs/paths suggest a
+   possible exfiltration channel.
+5. **Anomalously large header** (> 100 MB) — DoS or exploit territory.
+6. **Header not valid JSON** — corrupted or deliberately malformed.
 
-Реализация — полностью на Python, без зависимостей. Структура файла очень простая.
+Implementation is pure Python, no dependencies. The file structure is
+straightforward.
 """
 from __future__ import annotations
 
@@ -46,10 +47,10 @@ from ml_guard.scanners import Scanner, register
 
 
 # ---------------------------------------------------------------------------
-# Константы и базы знаний
+# Constants and knowledge base
 # ---------------------------------------------------------------------------
 
-# Известные dtype safetensors. Источник: huggingface/safetensors README.
+# Known safetensors dtypes. Source: huggingface/safetensors README.
 _KNOWN_DTYPES = frozenset({
     "BOOL",
     "U8", "I8",
@@ -59,7 +60,7 @@ _KNOWN_DTYPES = frozenset({
     "U64", "I64", "F64",
 })
 
-# Размеры элементов в байтах (для валидации numel * size == segment length).
+# Element sizes in bytes (for validating numel * size == segment length).
 _DTYPE_BYTES = {
     "BOOL": 1, "U8": 1, "I8": 1, "F8_E5M2": 1, "F8_E4M3": 1,
     "U16": 2, "I16": 2, "F16": 2, "BF16": 2,
@@ -67,14 +68,14 @@ _DTYPE_BYTES = {
     "U64": 8, "I64": 8, "F64": 8,
 }
 
-# Лимит размера заголовка. В реальной жизни даже самый крупный модельный header —
-# единицы мегабайт. 100 МБ — заведомо аномалия.
+# Header size cap. Real-world model headers are at most a few MB.
+# 100 MB is clearly anomalous.
 _MAX_HEADER_BYTES = 100 * 1024 * 1024
 
-# Разумная нижняя граница: пустой заголовок {} = 2 байта.
+# Sensible lower bound: empty header {} is 2 bytes.
 _MIN_HEADER_BYTES = 2
 
-# Сигнатуры исполняемых форматов в trailing-данных
+# Executable-format signatures we look for in trailing data.
 _EXEC_SIGNATURES: List[Tuple[bytes, str]] = [
     (b"\x7fELF",        "ELF (Linux executable)"),
     (b"MZ",             "PE/DOS (Windows executable)"),
@@ -87,20 +88,20 @@ _EXEC_SIGNATURES: List[Tuple[bytes, str]] = [
     (b"\x1f\x8b",       "gzip archive"),
 ]
 
-# Регексы для поиска "интересных" строк в __metadata__.
-# Намеренно консервативные — false positive раздражает больше чем пропуск.
+# Regexes used to find "interesting" strings in __metadata__.
+# Deliberately conservative — false positives annoy more than misses.
 _URL_RE = re.compile(rb"https?://[A-Za-z0-9.\-/_:?=&%~+#]+", re.ASCII)
 _IPV4_RE = re.compile(rb"\b(?:\d{1,3}\.){3}\d{1,3}\b", re.ASCII)
 _ABS_PATH_RE = re.compile(rb"(?:^|[\s\"'(])(?:/(?:etc|root|home|var|proc|tmp)/[A-Za-z0-9./_\-]+)", re.ASCII)
 _WIN_PATH_RE = re.compile(rb"(?:^|[\s\"'(])[A-Za-z]:\\\\[A-Za-z0-9.\\\-_]+", re.ASCII)
 
-# IP-адреса в metadata типа дата-сета — это нормально (например 127.0.0.1 как заглушка).
-# Поэтому 127.0.0.1 / 0.0.0.0 / 255.255.255.255 фильтруем.
+# Some IPs in dataset metadata are perfectly normal (loopback placeholders).
+# We filter those.
 _IGNORED_IPS = {b"127.0.0.1", b"0.0.0.0", b"255.255.255.255", b"1.1.1.1"}
 
 
 # ---------------------------------------------------------------------------
-# Парсер
+# Parser
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -117,7 +118,7 @@ class _SafetensorsParseError(Exception):
 
 
 def _parse_header(data: bytes) -> Tuple[int, Dict[str, Any]]:
-    """Возвращает (header_bytes_len, parsed_json). Бросает _SafetensorsParseError."""
+    """Returns (header_bytes_len, parsed_json). Raises _SafetensorsParseError."""
     if len(data) < 8:
         raise _SafetensorsParseError("file too short for header length")
     (header_len,) = struct.unpack("<Q", data[:8])
@@ -140,7 +141,7 @@ def _parse_header(data: bytes) -> Tuple[int, Dict[str, Any]]:
 
 
 def _extract_tensors(parsed: Dict[str, Any]) -> Tuple[List[_Tensor], List[str]]:
-    """Извлекает тензоры из JSON-заголовка. Возвращает (tensors, parse_warnings)."""
+    """Extract tensors from the JSON header. Returns (tensors, parse_warnings)."""
     tensors: List[_Tensor] = []
     warnings: List[str] = []
     for name, body in parsed.items():
@@ -178,7 +179,7 @@ def _shape_numel(shape: List[int]) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Сам сканер
+# The scanner itself
 # ---------------------------------------------------------------------------
 
 @register
@@ -192,8 +193,8 @@ class SafetensorsScanner(Scanner):
     _EXTENSIONS = {".safetensors"}
     MAX_BYTES = 16 * 1024 * 1024 * 1024  # 16 GiB
 
-    # Магия: u64 little-endian header_size, обычно небольшое значение, поэтому
-    # старшие байты ≈ 0. Это слабый сигнал; полагаемся на расширение.
+    # Sniff: u64 little-endian header_size is normally small, so the high
+    # bytes are ~0. This is a weak signal; we mostly rely on the extension.
 
     def can_scan(self, path: Path) -> bool:
         if not path.is_file():
@@ -245,7 +246,7 @@ class SafetensorsScanner(Scanner):
                 scanner=self.name,
             ))
 
-        # Анализ offset'ов
+        # Offset analysis
         max_end = 0
         prev_end = 0
         for t in sorted(tensors, key=lambda x: x.start):
@@ -267,8 +268,8 @@ class SafetensorsScanner(Scanner):
             prev_end = max(prev_end, t.end)
             max_end = max(max_end, t.end)
 
-        # Trailing data после последнего тензора?
-        # Допускаем небольшой padding (до 64 байт — спецификация это допускает в реальности).
+        # Trailing data after the last tensor?
+        # We tolerate small padding (up to 64 bytes — real-world spec allows it).
         ALLOWED_PADDING = 64
         trailing_size = data_section_size - max_end
         if trailing_size > ALLOWED_PADDING:
@@ -301,7 +302,7 @@ class SafetensorsScanner(Scanner):
                     snippet=trailing[:32].hex(),
                 ))
 
-        # Анализ __metadata__ на признаки exfiltration
+        # __metadata__ scan for exfiltration markers
         meta = parsed.get("__metadata__")
         if isinstance(meta, dict):
             self._scan_metadata(meta, findings)
@@ -353,10 +354,10 @@ class SafetensorsScanner(Scanner):
             ))
 
     def _check_tensor_size_consistency(self, t: _Tensor, findings: List[Finding]) -> None:
-        """Размер сегмента = numel * dtype_bytes. Иначе тензор «лжёт»."""
+        """segment length = numel * dtype_bytes. Otherwise the tensor "lies"."""
         elem_size = _DTYPE_BYTES.get(t.dtype)
         if elem_size is None:
-            return  # уже зарепортили unknown-dtype
+            return  # already reported unknown-dtype
         try:
             numel = _shape_numel(t.shape)
         except OverflowError:
@@ -370,7 +371,7 @@ class SafetensorsScanner(Scanner):
             return
         expected = numel * elem_size
         actual = t.end - t.start
-        # Разрешаем равенство; всё остальное — ложь.
+        # Equality is allowed; anything else is a lie.
         if actual != expected:
             findings.append(Finding(
                 rule_id="safetensors-size-mismatch",
@@ -387,7 +388,7 @@ class SafetensorsScanner(Scanner):
         for sig, name in _EXEC_SIGNATURES:
             if blob.startswith(sig):
                 return name
-        # Также проверяем первые ~16 байт — иногда payload смещён padding'ом.
+        # Also probe the first ~16 bytes — sometimes the payload is offset by padding.
         head = blob[:64]
         for sig, name in _EXEC_SIGNATURES:
             idx = head.find(sig)
@@ -396,8 +397,8 @@ class SafetensorsScanner(Scanner):
         return None
 
     def _scan_metadata(self, meta: Dict[str, Any], findings: List[Finding]) -> None:
-        """Ищем подозрительные строки в __metadata__: URL, IP, абс.пути."""
-        # Сериализуем в bytes один раз
+        """Look for suspicious strings in __metadata__: URLs, IPs, absolute paths."""
+        # Serialize to bytes once
         try:
             meta_bytes = json.dumps(meta, sort_keys=True).encode("utf-8", errors="replace")
         except (TypeError, ValueError):
@@ -441,7 +442,7 @@ class SafetensorsScanner(Scanner):
 
     @staticmethod
     def _is_valid_ip(b: bytes) -> bool:
-        """Дополнительная валидация — отфильтровать строки-числа типа 999.999.999.999."""
+        """Extra validation — filter out bogus dotted-number strings like 999.999.999.999."""
         try:
             parts = b.split(b".")
             if len(parts) != 4:

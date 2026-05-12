@@ -1,4 +1,4 @@
-"""JSON-форматтер для машинной обработки."""
+"""JSON formatter for machine consumption."""
 from __future__ import annotations
 
 import json
@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 
 def format_json(result: "ScanResult") -> str:
-    """Сериализует ScanResult в стабильный JSON."""
+    """Serialize ScanResult to stable JSON."""
     payload = {
         "tool": "ml-guard",
         "version": "0.1.0",

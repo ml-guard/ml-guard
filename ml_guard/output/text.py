@@ -1,4 +1,4 @@
-"""Текстовый форматтер — для человека в консоли."""
+"""Text formatter — human-readable console output."""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -17,8 +17,8 @@ _SEVERITY_ICONS = {
     Severity.INFO:     "i",
 }
 
-# ANSI-цвета. Минимальный fallback — если терминал не поддерживает,
-# вид будет уродливым, но читаемым.
+# ANSI colors. Minimal fallback — if the terminal doesn't support
+# them, the output will be ugly but still readable.
 _SEVERITY_COLORS = {
     Severity.CRITICAL: "\033[1;31m",  # bold red
     Severity.HIGH:     "\033[31m",
@@ -30,7 +30,7 @@ _RESET = "\033[0m"
 
 
 def format_text(result: "ScanResult", use_color: bool = True) -> str:
-    """Возвращает строку с цветным/некрасочным человекочитаемым отчётом."""
+    """Return a string with the colored/plain human-readable report."""
     lines = []
     lines.append("ML Guard — scan report")
     lines.append("=" * 40)
@@ -50,7 +50,7 @@ def format_text(result: "ScanResult", use_color: bool = True) -> str:
         lines.append("Summary:       no findings — all clear")
     lines.append("")
 
-    # Сортируем по серьёзности, потом по файлу
+    # Sort by severity, then by file
     sorted_findings = sorted(
         result.findings,
         key=lambda f: (-Severity.order(f.severity), f.file, f.location),

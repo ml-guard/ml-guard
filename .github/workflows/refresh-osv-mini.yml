@@ -7,6 +7,11 @@
 #     OSV is having a bad day; PR review is cheap insurance.
 #   • The diff also gives us a quick sanity check that the rebuild
 #     produced something reasonable (size delta, advisory count).
+#
+# IMPORTANT setup (one-time):
+#   Settings → Actions → General → Workflow permissions:
+#     [✓] Allow GitHub Actions to create and approve pull requests
+#   Without this, the workflow pushes the branch but fails to open the PR.
 
 name: Refresh bundled OSV mini-DB
 
@@ -41,6 +46,32 @@ jobs:
           python scripts/build_mini_osv.py \
             --source /tmp/osv-pypi.zip \
             --output ml_guard/data/osv-mini.sqlite
+
+      - name: Sanity check — DB size & content
+        run: |
+          # Defense against bad data on the OSV side: if the new mini-DB
+          # is suspiciously small or suspiciously large, fail the job
+          # rather than opening a PR with a broken DB.
+          size=$(stat -c %s ml_guard/data/osv-mini.sqlite)
+          echo "DB size: $size bytes"
+          # Min 1 MB (smaller means the import imported almost nothing)
+          if [ "$size" -lt 1000000 ]; then
+            echo "::error::Mini-DB suspiciously small ($size bytes < 1MB)"
+            exit 1
+          fi
+          # Max 10 MB (larger means the wheel will balloon, and either
+          # popular-ml-packages has grown or OSV has changed format)
+          if [ "$size" -gt 10000000 ]; then
+            echo "::error::Mini-DB suspiciously large ($size bytes > 10MB)"
+            exit 1
+          fi
+
+          # Run tests/test_cve_scanner.py against the new DB — if anything
+          # has systemically changed in the OSV format, the test will catch it.
+          python3 -m pytest tests/ -k cve -x --tb=short || {
+            echo "::error::CVE tests fail with new DB — likely OSV schema change"
+            exit 1
+          }
 
       - name: Compute summary
         id: summary

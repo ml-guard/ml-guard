@@ -1,24 +1,24 @@
-"""Compliance reporter — генерация PDF-отчётов для аудита.
+"""Compliance reporter — produces PDF reports for audit.
 
-Использование:
+Usage:
     ml-guard compliance --standard eu-ai-act --output report.pdf <path>
 
-Подход:
-  • Сканируем PATH стандартным runner'ом.
-  • Маппим каждое правило ML Guard на конкретные требования стандарта
-    (по которым его можно "закрыть").
-  • Считаем pass/fail/n-a по каждому требованию.
-  • Рисуем PDF с executive summary, таблицей контрольных точек, списком
-    findings, метаинформацией и SHA-256 самого отчёта (псевдо-tamper-evidence).
+Approach:
+  • Scan PATH using the standard runner.
+  • Map each ml-guard rule onto specific requirements of the standard
+    (the controls it can "close").
+  • Compute pass/fail/n-a for each requirement.
+  • Render a PDF with executive summary, control table, findings list,
+    metadata, and the report's SHA-256 (pseudo-tamper-evidence).
 
-Что мы НЕ делаем (намеренно):
-  • Не подписываем PDF цифровой подписью PKCS#7 — для этого нужен
-    сертификат от CA. Мы оставляем хук `signature_placeholder` — клиент
-    может прокинуть результат через сторонний signer (DocuSign, Adobe
-    Sign, OpenSSL CMS).
-  • Не утверждаем юридического статуса. Отчёт — это формализованное
-    свидетельство сканирования; решение о соответствии принимает
-    notified body / DPO. Это явно проговорено в самом PDF.
+What we deliberately do NOT do:
+  • No PKCS#7 digital signing of the PDF — that requires a CA cert.
+    We expose a `signature_placeholder` hook so the consumer can run
+    the output through an external signer (DocuSign, Adobe Sign,
+    OpenSSL CMS).
+  • No legal-status assertion. The report is formalized scan evidence;
+    actual conformance is decided by a notified body / DPO. The PDF
+    itself spells this out.
 """
 from __future__ import annotations
 
@@ -39,32 +39,32 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# Маппинг стандартов
+# Standards mapping
 # ---------------------------------------------------------------------------
 
 @dataclass
 class _Control:
-    """Один контроль (контрольная точка) в стандарте."""
+    """A single control (checkpoint) within a standard."""
     id: str
     title: str
     description: str
-    # Какие rule_id сканера ml-guard «закрывают» этот контроль.
-    # Если нашлось хотя бы одно — control fails (есть свидетельство нарушения).
+    # Which ml-guard rule_ids "close" this control.
+    # If at least one fires, the control fails (we have evidence of a violation).
     rule_ids: List[str] = field(default_factory=list)
 
 
 @dataclass
 class _Standard:
-    name: str           # человекочитаемое имя
+    name: str           # human-readable name
     id: str             # CLI alias
-    citation: str       # ссылка на источник
-    description: str    # короткая аннотация
+    citation: str       # source reference
+    description: str    # short annotation
     controls: List[_Control]
 
 
-# EU AI Act — мы покрываем подмножество требований, относящихся к
-# документации модели, киберустойчивости, прозрачности, и логированию.
-# Полный текст: Regulation (EU) 2024/1689.
+# EU AI Act — we cover a subset of requirements: model documentation,
+# cybersecurity, transparency, and logging.
+# Full text: Regulation (EU) 2024/1689.
 EU_AI_ACT = _Standard(
     name="EU AI Act (Regulation 2024/1689)",
     id="eu-ai-act",
@@ -118,8 +118,8 @@ EU_AI_ACT = _Standard(
                 "A CycloneDX 1.5 SBOM is produced alongside every scan, "
                 "listing all model artifacts and their declared dependencies."
             ),
-            # Этот контроль не привязан к findings — он либо есть, либо нет.
-            # В practice мы фиксируем pass, если scan завершился успешно.
+            # This control isn't tied to findings — it's binary (present/absent).
+            # In practice we mark it pass if the scan completed successfully.
             rule_ids=[],
         ),
         _Control(
@@ -189,7 +189,7 @@ EU_AI_ACT = _Standard(
 )
 
 
-# NIST AI Risk Management Framework — упрощённый вариант, можно расширять.
+# NIST AI Risk Management Framework — simplified subset, extendable.
 NIST_AI_RMF = _Standard(
     name="NIST AI Risk Management Framework 1.0",
     id="nist-ai-rmf",
@@ -344,8 +344,8 @@ ISO_27001 = _Standard(
                 "machine-readable SARIF output that flows directly into "
                 "GitHub Code Scanning, GitLab SAST, and similar tooling."
             ),
-            # Этот control закрывается самим фактом интеграции в CI.
-            # PASS, если scan в принципе прошёл (нет find-only-on-empty-input).
+            # This control is satisfied by the mere fact of CI integration.
+            # PASS if the scan ran at all (no find-only-on-empty-input).
             rule_ids=[],
         ),
         _Control(
@@ -543,7 +543,7 @@ def get_standard(id_: str) -> _Standard:
 
 
 # ---------------------------------------------------------------------------
-# Расчёт результата по контролам
+# Per-control result computation
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -561,8 +561,8 @@ def _evaluate(standard: _Standard, findings: Sequence[Finding]) -> List[_Control
     out: List[_ControlResult] = []
     for ctrl in standard.controls:
         if not ctrl.rule_ids:
-            # Контрол, который мы выполняем самим фактом сканирования
-            # (например, SBOM/timestamp) — всегда PASS.
+            # Controls satisfied by the act of scanning itself
+            # (e.g. SBOM/timestamp) — always PASS.
             out.append(_ControlResult(control=ctrl, status="PASS"))
             continue
         matched: List[Finding] = []
@@ -577,12 +577,12 @@ def _evaluate(standard: _Standard, findings: Sequence[Finding]) -> List[_Control
 
 
 # ---------------------------------------------------------------------------
-# Основной API
+# Public API
 # ---------------------------------------------------------------------------
 
 @dataclass
 class ComplianceReport:
-    """Сводный отчёт по compliance-сканированию."""
+    """Top-level compliance scan report."""
     standard: _Standard
     scan_root: Path
     timestamp: str           # ISO 8601 UTC
@@ -631,7 +631,7 @@ def build_report(
 
 
 # ---------------------------------------------------------------------------
-# Рендеринг в PDF
+# PDF rendering
 # ---------------------------------------------------------------------------
 
 def render_pdf(report: ComplianceReport) -> bytes:
@@ -667,7 +667,7 @@ def render_pdf(report: ComplianceReport) -> bytes:
         )
     doc.divider()
 
-    # Метаданные сканирования
+    # Scan metadata
     doc.heading("Scan metadata", size=14)
     doc.keyvalue_block([
         ("Scan root",          str(report.scan_root)),
@@ -683,12 +683,12 @@ def render_pdf(report: ComplianceReport) -> bytes:
     ])
     doc.divider()
 
-    # Описание стандарта
+    # Standard description
     doc.heading("About this standard", size=14)
     doc.paragraph(report.standard.description, size=10, leading=1.5)
     doc.divider()
 
-    # Контрольные точки
+    # Controls
     doc.heading("Controls evaluated", size=14)
     for cr in report.control_results:
         status_label = {
@@ -705,7 +705,7 @@ def render_pdf(report: ComplianceReport) -> bytes:
                 f"Evidence ({len(cr.matched_findings)} matching finding(s)):",
                 size=10, gap_below=2,
             )
-            # Показываем не более 5 первых, остальное — счётчиком
+            # Show at most 5; the rest is summarized as a count
             for f in cr.matched_findings[:5]:
                 bullet = (
                     f"{f.severity.value.upper()}: {f.rule_id} "
@@ -723,7 +723,7 @@ def render_pdf(report: ComplianceReport) -> bytes:
 
     doc.divider()
 
-    # Приложение: все findings
+    # Appendix: all findings
     if report.all_findings:
         doc.heading("Appendix A — All findings", size=14)
         for f in sorted(
@@ -743,8 +743,7 @@ def render_pdf(report: ComplianceReport) -> bytes:
 
     doc.divider()
 
-    # Приложение: список применённых правил (для аудитора, чтобы он мог
-    # проверить покрытие)
+    # Appendix: applied rules list (so the auditor can verify coverage)
     doc.heading("Appendix B — Rules covered by this standard", size=14)
     for cr in report.control_results:
         if not cr.control.rule_ids:
@@ -756,7 +755,7 @@ def render_pdf(report: ComplianceReport) -> bytes:
 
     doc.divider()
 
-    # Подпись (placeholder)
+    # Signature placeholder
     doc.heading("Integrity & signature", size=14)
     doc.paragraph(
         "This report was generated by ml-guard, an automated tool. The "
@@ -773,15 +772,14 @@ def render_pdf(report: ComplianceReport) -> bytes:
         size=10, leading=1.5,
     )
 
-    # Финализация (без fingerprint'а пока)
+    # Finalize (without the fingerprint yet)
     raw = doc.to_bytes()
 
-    # Считаем SHA-256 текущих байт и встраиваем как новый блок текста.
-    # Это даёт детерминистичный fingerprint, который можно проверить
-    # внешним инструментом.
+    # Compute SHA-256 of current bytes and embed as a new text block.
+    # Gives a deterministic fingerprint verifiable with external tools.
     fingerprint = hashlib.sha256(raw).hexdigest()
 
-    # Добавляем фингерпринт в конец и пересобираем.
+    # Append the fingerprint and rebuild.
     doc.keyvalue_block([
         ("SHA-256 (pre-fp)", fingerprint),
         ("Generated by",     f"ml-guard {__version__}"),

@@ -1,17 +1,17 @@
-"""Загрузка конфигурации ML Guard из YAML-файла.
+"""Load ml-guard configuration from a YAML file.
 
-Конвенция: ml-guard ищет первый существующий файл из:
-  • аргумент --config
+Convention: ml-guard searches the first existing file from:
+  • --config argument
   • $ML_GUARD_CONFIG
-  • .ml-guard.yml / .ml-guard.yaml в корне сканирования
-  • pyproject.toml в корне сканирования (секция [tool.ml-guard])
+  • .ml-guard.yml / .ml-guard.yaml at the scan root
+  • pyproject.toml at the scan root ([tool.ml-guard] section)
 
-Опции CLI всегда побеждают конфиг — конфиг задаёт дефолты для команды.
+CLI options always win — the config provides defaults for the command.
 
-Схема конфигурации (все поля необязательны):
+Configuration schema (all fields optional):
 
     # .ml-guard.yml
-    fail_on: high              # severity для exit-кода
+    fail_on: high              # severity threshold for non-zero exit
     include:
       - 'models/*.pkl'
       - 'configs/*.yaml'
@@ -23,9 +23,9 @@
     max_file_size_mb: 4096
     rules:
       pickle-unusual-module:
-        severity: low          # понизить серьёзность правила
+        severity: low          # downgrade the rule's severity
       pickle-deprecated-opcode:
-        disabled: true         # отключить правило
+        disabled: true         # disable the rule entirely
 """
 from __future__ import annotations
 
@@ -42,27 +42,27 @@ from ml_guard.findings import Severity
 log = logging.getLogger(__name__)
 
 
-# Имена файлов, в которых мы ищем конфиг автоматически
+# Filenames we look up the config in by convention
 _AUTO_CONFIG_NAMES = (".ml-guard.yml", ".ml-guard.yaml")
 
 
 @dataclass
 class RuleOverride:
-    """Переопределение поведения одного правила."""
-    severity: Optional[Severity] = None    # сменить уровень
-    disabled: bool = False                 # выключить полностью
+    """Per-rule behavior override."""
+    severity: Optional[Severity] = None    # change severity level
+    disabled: bool = False                 # disable entirely
 
 
 @dataclass
 class Config:
-    """Декодированная конфигурация. Все поля необязательны и могут быть None."""
+    """Decoded configuration. All fields optional, all may be None."""
     fail_on: Optional[Severity] = None
     include: List[str] = field(default_factory=list)
     exclude: List[str] = field(default_factory=list)
     scanners: List[str] = field(default_factory=list)
     max_file_size_mb: Optional[int] = None
     rules: Dict[str, RuleOverride] = field(default_factory=dict)
-    # Откуда конфиг был прочитан — полезно в --verbose
+    # Where the config was read from — useful for --verbose
     source_path: Optional[Path] = None
 
     # ------------------------------------------------------------------
@@ -72,9 +72,9 @@ class Config:
 
     def apply_rule_override(self, finding) -> Optional[object]:
         """
-        Если для finding.rule_id есть override, применяет его.
-        Возвращает None если правило отключено (finding нужно отбросить),
-        иначе возвращает finding (возможно изменённый).
+        If there's an override for finding.rule_id, apply it.
+        Returns None if the rule is disabled (finding should be dropped),
+        otherwise returns the (possibly modified) finding.
         """
         ov = self.rules.get(finding.rule_id)
         if ov is None:
@@ -87,7 +87,7 @@ class Config:
 
 
 # ----------------------------------------------------------------------
-# Загрузка
+# Loading
 # ----------------------------------------------------------------------
 
 def load_config(
@@ -95,11 +95,11 @@ def load_config(
     scan_root: Optional[Path] = None,
 ) -> Config:
     """
-    Стратегия:
-      1. Если задан explicit_path — читаем строго его, иначе ошибка.
-      2. Если задан $ML_GUARD_CONFIG — читаем его.
-      3. Если задан scan_root — ищем .ml-guard.yml/.yaml там.
-      4. Иначе возвращаем пустой Config.
+    Strategy:
+      1. If explicit_path is given — read exactly that, error otherwise.
+      2. If $ML_GUARD_CONFIG is set — read that.
+      3. If scan_root is given — look for .ml-guard.yml/.yaml there.
+      4. Otherwise return an empty Config.
     """
     path: Optional[Path] = None
 
@@ -112,14 +112,14 @@ def load_config(
         if env_path.exists():
             path = env_path
     elif scan_root is not None:
-        # Ищем в scan_root и до 3 родителей вверх (на случай монорепо)
+        # Search scan_root and up to 3 parents upward (for monorepos)
         candidates: List[Path] = []
         cur = scan_root if scan_root.is_dir() else scan_root.parent
         for _ in range(4):
             for name in _AUTO_CONFIG_NAMES:
                 candidates.append(cur / name)
             cur = cur.parent
-            if cur == cur.parent:  # достигли /
+            if cur == cur.parent:  # reached the root
                 break
         for cand in candidates:
             if cand.is_file():

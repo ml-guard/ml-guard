@@ -1,11 +1,11 @@
-# Сборка нативного модуля `ml_guard_engine` через maturin.
-# Собирается отдельно от основного Python-пакета ml_guard:
+# Build the native `ml_guard_engine` module via maturin.
+# Built separately from the main ml_guard Python package:
 #
 #   pip install maturin
 #   cd rust_engine && maturin develop --release
 #
-# После этого `import ml_guard_engine` работает в текущем venv,
-# и pickle scanner автоматически переключается на нативный путь.
+# After that, `import ml_guard_engine` works in the current venv and
+# the pickle scanner automatically switches to the native path.
 
 [build-system]
 requires = ["maturin>=1.4,<2.0"]
