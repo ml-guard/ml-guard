@@ -1,0 +1,109 @@
+name: Bug report
+description: Something doesn't work the way you expected.
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. The more details you can
+        share, the faster we can fix it.
+
+        > **Security issues:** if you've found a way to bypass ml-guard's
+        > detection, or a vulnerability in ml-guard itself, **please do not
+        > open a public issue.** See [SECURITY.md](https://github.com/ml-guard/ml-guard/blob/main/SECURITY.md)
+        > for the responsible disclosure process.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear, concise description of the unexpected behavior.
+      placeholder: |
+        Example: ml-guard scan flagged a benign safetensors file as malicious.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      placeholder: |
+        Example: No findings, since the file was produced by a clean
+        torch.save() call on trusted weights.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: |
+        Exact commands to reproduce. If the issue depends on a specific file,
+        attach a minimal sample (anonymized weights are fine).
+      placeholder: |
+        1. `pip install mlsupplychain==0.1.0`
+        2. Download attached `weights.safetensors`
+        3. Run `ml-guard scan weights.safetensors`
+        4. Observe finding `safetensors-suspicious-metadata-url`
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: ml-guard version
+      description: Output of `ml-guard --version`
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: Output of `python --version`
+      placeholder: "Python 3.11.5"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other (specify in additional context)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: How did you install ml-guard?
+      options:
+        - pip install mlsupplychain
+        - pip install 'mlsupplychain[native]'
+        - GitHub Action (ml-guard/scan-action)
+        - pip install -e . (from source)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / output
+      description: |
+        Paste the full output of the failing command. Run with `--verbose`
+        if possible. Don't paste real secrets — replace them with `[REDACTED]`.
+      render: text
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else that might help — workflow YAML, config file, related issues.

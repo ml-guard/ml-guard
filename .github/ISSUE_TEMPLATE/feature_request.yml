@@ -1,0 +1,80 @@
+name: Feature request
+description: Suggest a new scanner, detection rule, output format, or other improvement.
+title: "[feature] "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion! Before writing a long proposal, please
+        check [open issues](https://github.com/ml-guard/ml-guard/issues) to
+        see if someone has asked for something similar.
+
+        For general questions ("how do I do X?") please use
+        [Discussions](https://github.com/ml-guard/ml-guard/discussions)
+        instead — they're better for back-and-forth conversation.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of feature?
+      options:
+        - New scanner (a new file/format ml-guard should analyze)
+        - New rule (a new threat the existing scanners should detect)
+        - New compliance standard
+        - New output format
+        - CLI / UX improvement
+        - Performance improvement
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's the underlying problem?
+      description: |
+        Describe the gap or pain point — not the solution. We may find an
+        even better solution once we understand the actual need.
+      placeholder: |
+        Example: my team uses JAX (Flax) for training, and our checkpoints
+        are `.msgpack` files. ml-guard doesn't scan them, so we have no
+        coverage for that artifact type.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How you'd ideally see this work. Sketches, pseudocode, or CLI mockups are great.
+      placeholder: |
+        Example: a `msgpack_scanner` that walks the binary tree, flags
+        embedded executables in `bytes` fields, and validates known
+        Flax/Optax type tags.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing workarounds, related tools, or other approaches you've thought about.
+
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Are you interested in contributing this yourself?
+      options:
+        - "Yes, I'd like to implement it (with maintainer guidance)"
+        - "I could help with testing / fixtures"
+        - "I'm reporting the need, but can't implement it"
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Links to references, sample files, related projects, papers — anything helpful.

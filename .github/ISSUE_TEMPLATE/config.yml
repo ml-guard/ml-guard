@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question / how-to / discussion
+    url: https://github.com/ml-guard/ml-guard/discussions
+    about: |
+      For general questions ("how do I configure X?", "does ml-guard detect Y?"),
+      please use Discussions. They're better for conversation than Issues.
+
+  - name: Security vulnerability
+    url: https://github.com/ml-guard/ml-guard/blob/main/SECURITY.md
+    about: |
+      Found a way to bypass ml-guard, or a vulnerability in ml-guard itself?
+      Please follow the responsible disclosure process in SECURITY.md.
+      Do NOT open a public issue.
