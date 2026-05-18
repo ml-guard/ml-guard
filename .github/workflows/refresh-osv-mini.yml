@@ -33,6 +33,8 @@ jobs:
         with: { python-version: '3.12' }
 
       - name: Install ml-guard
+        # No dev extras needed — sanity check uses the bundled stdlib
+        # test runner (run_tests.py), not pytest.
         run: pip install -e .
 
       - name: Download fresh OSV PyPI dump
@@ -66,12 +68,26 @@ jobs:
             exit 1
           fi
 
-          # Run tests/test_cve_scanner.py against the new DB — if anything
-          # has systemically changed in the OSV format, the test will catch it.
-          python3 -m pytest tests/ -k cve -x --tb=short || {
-            echo "::error::CVE tests fail with new DB — likely OSV schema change"
+          # Run CVE-related tests against the new DB. If the OSV format
+          # changes upstream (rare but possible), the tests will catch it
+          # before we open a PR with a broken DB.
+          #
+          # We use the bundled stdlib runner (run_tests.py) instead of pytest
+          # because CVE tests live there — they hit a real OSV import path
+          # and are kept outside the pytest tree to avoid heavyweight test
+          # collection in normal CI. The runner exits non-zero if any test
+          # fails, so a simple bash test on $? suffices.
+          PYTHONPATH=. python3 run_tests.py 2>&1 | tee /tmp/test-output.txt
+          if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+            echo "::error::Tests fail with new DB — likely OSV schema change"
             exit 1
-          }
+          fi
+          # Belt-and-suspenders: explicitly verify CVE tests ran (guards
+          # against future refactors that might silently skip them).
+          if ! grep -q "=== CVE checker ===" /tmp/test-output.txt; then
+            echo "::error::CVE test section did not run — runner output unexpected"
+            exit 1
+          fi
 
       - name: Compute summary
         id: summary
